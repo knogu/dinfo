@@ -2,7 +2,7 @@
 #![allow(unknown_lints)]
 
 use fallible_iterator::FallibleIterator;
-use gimli::{Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
+use gimli::{Abbreviation, Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
 use object::{Object, ObjectSection, ObjectSymbol};
 use regex::bytes::Regex;
 use std::borrow::Cow;
@@ -12,7 +12,7 @@ use std::env;
 use std::fmt::{self, Debug};
 use std::fs;
 use std::io;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, stdout, Write};
 use std::iter::Iterator;
 use std::mem;
 use std::process;
@@ -1323,11 +1323,15 @@ fn dump_entries<R: Reader, W: Write>(
 ) -> Result<()> {
     let mut spaces_buf = String::new();
 
+    let mut cur_funcname = "".to_string();
+    let mut func_name_to_arg_names: HashMap<String, Vec<String>> = HashMap::new();
     let mut entries = unit.entries_raw(None)?;
+    println!("before loop");
     while !entries.is_empty() {
         let offset = entries.next_offset();
         let depth = entries.next_depth();
         let abbrev = entries.read_abbreviation()?;
+
 
         let mut indent = if depth >= 0 {
             depth as usize * 2 + 2
@@ -1348,11 +1352,19 @@ fn dump_entries<R: Reader, W: Write>(
             indent += GOFF_SPACES;
         }
 
+        let mut funcname = "".to_string();
+        let mut argname = "".to_string();
+
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
             w.write_all(spaces(&mut spaces_buf, indent).as_bytes())?;
             if let Some(n) = attr.name().static_string() {
                 let right_padding = 27 - std::cmp::min(27, n.len());
+                println!("the attr name is: {}", n);
+                if n == "DW_AT_name" {
+                    funcname = get_func_name::<R, W>(&attr, dwarf);
+                    argname = get_arg_name::<R, W>(&attr)
+                }
                 write!(w, "{}{} ", n, spaces(&mut spaces_buf, right_padding))?;
             } else {
                 write!(w, "{:27} ", attr.name())?;
@@ -1366,8 +1378,64 @@ fn dump_entries<R: Reader, W: Write>(
                 };
             }
         }
+
+        match abbrev {
+            None => {}
+            Some(rev_val) => {
+                println!("tag is: {}", rev_val.tag().to_string());
+                match rev_val.tag().to_string().as_str() {
+                    "DW_TAG_subprogram" => {
+                        cur_funcname = funcname.clone();
+                        func_name_to_arg_names.insert(funcname, vec![]);
+                    }
+                    "DW_TAG_formal_parameter" => {
+                        func_name_to_arg_names.get_mut(&*cur_funcname.clone()).expect("REASON").push(argname)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    println!("funcname keys");
+    for funcName in func_name_to_arg_names.keys() {
+        println!("{}", funcName);
+        println!("{:?}", func_name_to_arg_names.get(&*funcName.clone()));
     }
     Ok(())
+}
+
+fn get_func_name<R: Reader, W: Write> (
+    attr: &gimli::Attribute<R>,
+    dwarf: &gimli::Dwarf<R>,
+) -> String {
+    let value = attr.value();
+    match value {
+        gimli::AttributeValue::DebugStrRef(offset) => {
+            if let Ok(s) = dwarf.debug_str.get_str(offset) {
+                println!("The string ref is: {:?}", s.to_string_lossy());
+                // writeln!(w, "{}", s.to_string_lossy()?)?;
+                return s.to_string_lossy().unwrap().parse().unwrap();
+            } else {
+                // writeln!(w, "<.debug_str+0x{:08x}>", offset.0)?;
+                return "".to_string();
+            }
+        }
+        _ => {return "".to_string();}
+    }
+}
+
+fn get_arg_name<R: Reader, W: Write> (
+    attr: &gimli::Attribute<R>,
+) -> String {
+    let value = attr.value();
+    match value {
+        gimli::AttributeValue::String(s) => {
+            // println!("The string is: {:?}", s.to_string_lossy()?);
+            // writeln!(w, "{}", s.to_string_lossy()?)?;
+            return s.to_string_lossy().unwrap().parse().unwrap();
+        }
+        _ => {return "".to_string();}
+    }
 }
 
 fn dump_attr_value<R: Reader, W: Write>(
@@ -1449,7 +1517,9 @@ fn dump_attr_value<R: Reader, W: Write>(
                 }
                 write!(w, ": ")?;
             }
+            // writeln!(w, "dumping")?;
             dump_exprloc(w, unit.encoding(), data)?;
+            writeln!(stdout())?;
             writeln!(w)?;
         }
         gimli::AttributeValue::Flag(true) => {
@@ -1525,6 +1595,7 @@ fn dump_attr_value<R: Reader, W: Write>(
         }
         gimli::AttributeValue::DebugStrRef(offset) => {
             if let Ok(s) = dwarf.debug_str.get_str(offset) {
+                println!("The string ref is: {:?}", s.to_string_lossy()?);
                 writeln!(w, "{}", s.to_string_lossy()?)?;
             } else {
                 writeln!(w, "<.debug_str+0x{:08x}>", offset.0)?;
@@ -1564,6 +1635,7 @@ fn dump_attr_value<R: Reader, W: Write>(
             }
         }
         gimli::AttributeValue::String(s) => {
+            println!("The string is: {:?}", s.to_string_lossy()?);
             writeln!(w, "{}", s.to_string_lossy()?)?;
         }
         gimli::AttributeValue::Encoding(value) => {
@@ -1707,6 +1779,7 @@ fn dump_op<R: Reader, W: Write>(
     op: gimli::Operation<R>,
 ) -> Result<()> {
     let dwop = gimli::DwOp(pc.read_u8()?);
+    writeln!(io::stdout(), "{}", dwop)?;
     write!(w, "{}", dwop)?;
     match op {
         gimli::Operation::Deref {
