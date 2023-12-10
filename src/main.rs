@@ -1337,16 +1337,13 @@ fn dump_entries<R: Reader, W: Write>(
 ) -> Result<()> {
     let mut spaces_buf = String::new();
 
-    // let mut cur_funcname = "".to_string();
     let mut cur_func = Func{ name: "".to_string(), args: vec![] };;
     let mut functions: Vec<Func> = vec![];
     let mut entries = unit.entries_raw(None)?;
-    println!("before loop");
     while !entries.is_empty() {
         let offset = entries.next_offset();
         let depth = entries.next_depth();
         let abbrev = entries.read_abbreviation()?;
-        // offset2abbr.insert(offset, abbrev.unwrap());
 
         let mut indent = if depth >= 0 {
             depth as usize * 2 + 2
@@ -1377,13 +1374,12 @@ fn dump_entries<R: Reader, W: Write>(
             w.write_all(spaces(&mut spaces_buf, indent).as_bytes())?;
             if let Some(n) = attr.name().static_string() {
                 let right_padding = 27 - std::cmp::min(27, n.len());
-                println!("the attr name is: {}", n);
                 if n == "DW_AT_name" {
                     funcname = get_func_name::<R, W>(&attr, dwarf);
                     argname = get_arg_name::<R, W>(&attr)
                 }
                 if n == "DW_AT_location" {
-                    argoffset = get_arg_loc::<R, W>(w, &attr, &unit);
+                    argoffset = get_arg_loc::<R, W>(&attr, &unit);
                 }
                 if n == "DW_AT_type" {
                     match abbrev {
@@ -1391,8 +1387,8 @@ fn dump_entries<R: Reader, W: Write>(
                         Some(rev_val) => {
                             match rev_val.tag().to_string().as_str() {
                                 "DW_TAG_formal_parameter" => {
-                                    bytesize = get_arg_byte_size::<R, W>(w, &attr, &unit);
-                                    typename = get_arg_type_name::<R, W>(w, &attr, &unit, dwarf);
+                                    bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
+                                    typename = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
                                 }
                                 _ => {}
                             }
@@ -1417,7 +1413,6 @@ fn dump_entries<R: Reader, W: Write>(
         match abbrev {
             None => {}
             Some(rev_val) => {
-                println!("tag is: {}", rev_val.tag().to_string());
                 match rev_val.tag().to_string().as_str() {
                     "DW_TAG_subprogram" => {
                         cur_func = Func{ name: funcname, args: vec![] };
@@ -1433,14 +1428,13 @@ fn dump_entries<R: Reader, W: Write>(
         }
     }
     for function in functions {
-        println!("{}", function.name);
+        println!("function {}", function.name);
         for arg in function.args {
             println!("{}", arg.name);
             println!("{}", arg.bytes_cnt);
             println!("{}", arg.location);
             println!("{}", arg.type_name);
         }
-        println!();
     }
     Ok(())
 }
@@ -1453,11 +1447,8 @@ fn get_func_name<R: Reader, W: Write> (
     match value {
         gimli::AttributeValue::DebugStrRef(offset) => {
             if let Ok(s) = dwarf.debug_str.get_str(offset) {
-                println!("The string ref is: {:?}", s.to_string_lossy());
-                // writeln!(w, "{}", s.to_string_lossy()?)?;
                 return s.to_string_lossy().unwrap().parse().unwrap();
             } else {
-                // writeln!(w, "<.debug_str+0x{:08x}>", offset.0)?;
                 return "".to_string();
             }
         }
@@ -1466,22 +1457,13 @@ fn get_func_name<R: Reader, W: Write> (
 }
 
 fn get_arg_loc<R: Reader, W: Write> (
-    w: &mut W,
     attr: &gimli::Attribute<R>,
     unit: &gimli::Unit<R>,
 ) -> i64 {
     let value = attr.value();
     match value {
         gimli::AttributeValue::Exprloc(ref data) => {
-            // if let gimli::AttributeValue::Exprloc(_) = attr.raw_value() {
-            //     write!(w, "len 0x{:04x}: ", data.0.len())?;
-            //     for byte in data.0.to_slice()?.iter() {
-            //         write!(w, "{:02x}", byte)?;
-            //     }
-            //     write!(w, ": ")?;
-            // }
-            // writeln!(w, "dumping")?;
-            return get_frame_offset_by_data(w, unit.encoding(), data).unwrap();
+            return get_frame_offset_by_data::<R, W>(unit.encoding(), data).unwrap();
         }
         _ => {return 0;}
     }
@@ -1489,16 +1471,14 @@ fn get_arg_loc<R: Reader, W: Write> (
 
 // from dump_exprloc
 fn get_frame_offset_by_data<R: Reader, W: Write>(
-    w: &mut W,
     encoding: gimli::Encoding,
     data: &gimli::Expression<R>,
 ) -> Result<(i64)> {
     let mut pc = data.0.clone();
     while pc.len() != 0 {
-        let pc_clone = pc.clone();
         return match gimli::Operation::parse(&mut pc, encoding) {
             Ok(op) => {
-                get_frame_offset(w, encoding, pc_clone, op)
+                get_frame_offset::<R, W>(op)
             }
             _ => Err(Error::IoError)
         }
@@ -1509,18 +1489,10 @@ fn get_frame_offset_by_data<R: Reader, W: Write>(
 
 // from dump_op
 fn get_frame_offset<R: Reader, W: Write>(
-    w: &mut W,
-    encoding: gimli::Encoding,
-    mut pc: R,
     op: gimli::Operation<R>,
 ) -> Result<(i64)> {
-    let dwop = gimli::DwOp(pc.read_u8()?);
-    writeln!(io::stdout(), "{}", dwop)?;
-    write!(w, "{}", dwop)?;
     return match op {
         gimli::Operation::FrameOffset { offset } => {
-            write!(stdout(), " offset is:{}", offset)?;
-            write!(w, " {}", offset)?;
             Ok(offset)
         }
         _  => { Err(Error::IoError) }
@@ -1533,8 +1505,6 @@ fn get_arg_name<R: Reader, W: Write> (
     let value = attr.value();
     match value {
         gimli::AttributeValue::String(s) => {
-            // println!("The string is: {:?}", s.to_string_lossy()?);
-            // writeln!(w, "{}", s.to_string_lossy()?)?;
             return s.to_string_lossy().unwrap().parse().unwrap();
         }
         _ => {return "".to_string();}
@@ -1542,7 +1512,6 @@ fn get_arg_name<R: Reader, W: Write> (
 }
 
 fn get_arg_byte_size<R: Reader, W: Write>(
-    w: &mut W,
     attr: &gimli::Attribute<R>,
     unit: &gimli::Unit<R>,
 ) -> u64 {
@@ -1551,8 +1520,6 @@ fn get_arg_byte_size<R: Reader, W: Write>(
         gimli::AttributeValue::UnitRef(offset) => {
             match offset.to_unit_section_offset(unit) {
                 UnitSectionOffset::DebugInfoOffset(goff) => {
-                    // write!(w, "<.debug_info+0x{:08x}>", goff.0)?;
-                    // writeln!(stdout(), "<.debug_info+0x{:08x}>", goff.0)?;
                     let byte_size = unit.entry(offset).unwrap().attr(gimli::DW_AT_byte_size);
                     match byte_size {
                         Ok(s) => {match s {
@@ -1570,7 +1537,6 @@ fn get_arg_byte_size<R: Reader, W: Write>(
 }
 
 fn get_arg_type_name<R: Reader, W: Write>(
-    w: &mut W,
     attr: &gimli::Attribute<R>,
     unit: &gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
@@ -1580,10 +1546,7 @@ fn get_arg_type_name<R: Reader, W: Write>(
         gimli::AttributeValue::UnitRef(offset) => {
             match offset.to_unit_section_offset(unit) {
                 UnitSectionOffset::DebugInfoOffset(goff) => {
-                    // write!(w, "<.debug_info+0x{:08x}>", goff.0)?;
-                    // writeln!(stdout(), "<.debug_info+0x{:08x}>", goff.0)?;
                     let die = unit.entry(offset).unwrap();
-                    // println!("die's tag is {}", die.tag());
                     match die.tag() {
                         gimli::DW_TAG_base_type => {
                             let type_name = die.attr(gimli::DW_AT_name);
@@ -1591,24 +1554,16 @@ fn get_arg_type_name<R: Reader, W: Write>(
                                 Ok(s) => {match s {
                                     None => {return "".to_string();}
                                     Some(typename) => {
-                                        println!("{:?}", typename.value());
                                         match typename.value() {
                                             gimli::AttributeValue::DebugStrRef(offset) => {
                                                 if let Ok(s) = dwarf.debug_str.get_str(offset) {
-                                                    // println!("The string ref is: {:?}", s.to_string_lossy());
-                                                    // writeln!(stdout(), "typename is {}", s.to_string_lossy().unwrap());
                                                     return s.to_string_lossy().unwrap().to_string();
-                                                    // return s.to_string_lossy().unwrap().parse().unwrap();
                                                 } else {
-                                                    // writeln!(w, "<.debug_str+0x{:08x}>", offset.0)?;
                                                     return "".to_string();
                                                 }
                                             }
                                             gimli::AttributeValue::String(s) => {
-                                                // println!("The string is: {:?}", s.to_string_lossy()?);
-                                                // writeln!(w, "{}", s.to_string_lossy()?)?;
                                                 let typename: String = s.to_string_lossy().unwrap().parse().unwrap();
-                                                // println!("typename is {}", typename);
                                                 return typename;
                                             }
                                             _ => {return "".to_string();}
@@ -1620,9 +1575,8 @@ fn get_arg_type_name<R: Reader, W: Write>(
                             }
                         }
                         gimli::DW_TAG_pointer_type => {
-                            println!("pointer type");
                             let base = die.attr(gimli::DW_AT_type);
-                            return "Ptr[".to_string() + &get_arg_type_name(w, &base.unwrap().unwrap(), unit, dwarf) + "]";
+                            return "Ptr[".to_string() + &get_arg_type_name::<R, W>(&base.unwrap().unwrap(), unit, dwarf) + "]";
                         }
                         _ => {return "".to_string();}
                     }
@@ -1702,7 +1656,6 @@ fn dump_attr_value<R: Reader, W: Write>(
                     writeln!(w, "{}", data)?;
                 }
                 _ => {
-                    writeln!(stdout(), "0x{:08x}", data)?;
                     writeln!(w, "0x{:08x}", data)?;
                 }
             };
@@ -1715,9 +1668,7 @@ fn dump_attr_value<R: Reader, W: Write>(
                 }
                 write!(w, ": ")?;
             }
-            // writeln!(w, "dumping")?;
             dump_exprloc(w, unit.encoding(), data)?;
-            writeln!(stdout())?;
             writeln!(w)?;
         }
         gimli::AttributeValue::Flag(true) => {
@@ -1742,15 +1693,6 @@ fn dump_attr_value<R: Reader, W: Write>(
             match offset.to_unit_section_offset(unit) {
                 UnitSectionOffset::DebugInfoOffset(goff) => {
                     write!(w, "<.debug_info+0x{:08x}>", goff.0)?;
-                    writeln!(stdout(), "<.debug_info+0x{:08x}>", goff.0)?;
-                    let byte_size = unit.entry(offset).unwrap().attr(gimli::DW_AT_byte_size);
-                    match byte_size {
-                        Ok(s) => {match s {
-                            None => {}
-                            Some(byte_size) => {println!("byte_size: {:?}", byte_size.value().udata_value().unwrap());}
-                        }}
-                        Err(_) => {}
-                    }
                 }
                 UnitSectionOffset::DebugTypesOffset(goff) => {
                     write!(w, "<.debug_types+0x{:08x}>", goff.0)?;
@@ -1802,7 +1744,6 @@ fn dump_attr_value<R: Reader, W: Write>(
         }
         gimli::AttributeValue::DebugStrRef(offset) => {
             if let Ok(s) = dwarf.debug_str.get_str(offset) {
-                println!("The string ref is: {:?}", s.to_string_lossy()?);
                 writeln!(w, "{}", s.to_string_lossy()?)?;
             } else {
                 writeln!(w, "<.debug_str+0x{:08x}>", offset.0)?;
@@ -1842,7 +1783,6 @@ fn dump_attr_value<R: Reader, W: Write>(
             }
         }
         gimli::AttributeValue::String(s) => {
-            println!("The string is: {:?}", s.to_string_lossy()?);
             writeln!(w, "{}", s.to_string_lossy()?)?;
         }
         gimli::AttributeValue::Encoding(value) => {
@@ -1986,7 +1926,6 @@ fn dump_op<R: Reader, W: Write>(
     op: gimli::Operation<R>,
 ) -> Result<()> {
     let dwop = gimli::DwOp(pc.read_u8()?);
-    writeln!(io::stdout(), "{}", dwop)?;
     write!(w, "{}", dwop)?;
     match op {
         gimli::Operation::Deref {
@@ -2058,7 +1997,6 @@ fn dump_op<R: Reader, W: Write>(
             }
         }
         gimli::Operation::FrameOffset { offset } => {
-            write!(stdout(), " offset is:{}", offset)?;
             write!(w, " {}", offset)?;
         }
         gimli::Operation::Call { offset } => match offset {
