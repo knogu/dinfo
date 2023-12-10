@@ -15,6 +15,8 @@ use std::io::{BufWriter, stdout, Write};
 use std::iter::Iterator;
 use std::process;
 use std::result;
+use getopts::Matches;
+use regex::Match;
 use typed_arena::Arena;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,48 +347,42 @@ fn main() {
     }
 
     for file_path in &matches.free {
-        if matches.free.len() != 1 {
-            println!("{}", file_path);
-            println!();
-        }
-
-        let file = match fs::File::open(&file_path) {
-            Ok(file) => file,
-            Err(err) => {
-                eprintln!("Failed to open file '{}': {}", file_path, err);
-                continue;
-            }
-        };
-        let file = match unsafe { memmap2::Mmap::map(&file) } {
-            Ok(mmap) => mmap,
-            Err(err) => {
-                eprintln!("Failed to map file '{}': {}", file_path, err);
-                continue;
-            }
-        };
-        let file = match object::File::parse(&*file) {
-            Ok(file) => file,
-            Err(err) => {
-                eprintln!("Failed to parse file '{}': {}", file_path, err);
-                continue;
-            }
-        };
-
-        let endian = if file.is_little_endian() {
-            gimli::RunTimeEndian::Little
-        } else {
-            gimli::RunTimeEndian::Big
-        };
-        let ret = dump_file(&file, endian, &flags);
-        match ret {
-            Ok(ret) => {
-                for func in ret {
-                    println!("{:?}", func);
-                }
-            },
-            Err(err) => eprintln!("Failed to dump '{}': {}", file_path, err,),
-        }
+        let res = get_func_info(file_path, &flags);
+        println!("{:?}", res.unwrap());
     }
+}
+
+// 構造体の初期化でこれやって、構造体のメンバとして関数名→Func, のmap持ちたい
+// flagsはちゃんと中身見れば多分なくせるんでは
+fn get_func_info(file_path: &String, flags: &Flags) -> Result<Vec<Func>> {
+    let file = match fs::File::open(&file_path) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("Failed to open file '{}': {}", file_path, err);
+            return Err(Error::from(err));
+        }
+    };
+    let file = match unsafe { memmap2::Mmap::map(&file) } {
+        Ok(mmap) => mmap,
+        Err(err) => {
+            eprintln!("Failed to map file '{}': {}", file_path, err);
+            return Err(Error::from(err));
+        }
+    };
+    let file = match object::File::parse(&*file) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("Failed to parse file '{}': {}", file_path, err);
+            return Err(Error::from(err));
+        }
+    };
+
+    let endian = if file.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+    return dump_file(&file, endian, &flags);
 }
 
 fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
