@@ -1315,6 +1315,19 @@ fn write_offset<R: Reader, W: Write>(
     Ok(())
 }
 
+#[derive(Clone)]
+struct Func {
+    name: String,
+    args: Vec<Arg>,
+}
+
+#[derive(Clone)]
+struct Arg {
+    name: String,
+    location: i64,
+    bytes_cnt: u64,
+}
+
 fn dump_entries<R: Reader, W: Write>(
     w: &mut W,
     unit: gimli::Unit<R>,
@@ -1323,13 +1336,11 @@ fn dump_entries<R: Reader, W: Write>(
 ) -> Result<()> {
     let mut spaces_buf = String::new();
 
-    let mut cur_funcname = "".to_string();
-    let mut func_name_to_arg_names: HashMap<String, Vec<String>> = HashMap::new();
-    let mut func_name_to_arg_locations: HashMap<String, Vec<i64>> = HashMap::new();
-    let mut func_name_to_arg_sizes: HashMap<String, Vec<u64>> = HashMap::new();
+    // let mut cur_funcname = "".to_string();
+    let mut cur_func = Func{ name: "".to_string(), args: vec![] };;
+    let mut functions: Vec<Func> = vec![];
     let mut entries = unit.entries_raw(None)?;
     println!("before loop");
-    let mut offset2abbr: HashMap<UnitOffset, &Abbreviation> = HashMap::new();
     while !entries.is_empty() {
         let offset = entries.next_offset();
         let depth = entries.next_depth();
@@ -1406,27 +1417,26 @@ fn dump_entries<R: Reader, W: Write>(
                 println!("tag is: {}", rev_val.tag().to_string());
                 match rev_val.tag().to_string().as_str() {
                     "DW_TAG_subprogram" => {
-                        cur_funcname = funcname.clone();
-                        func_name_to_arg_names.insert(funcname.clone(), vec![]);
-                        func_name_to_arg_locations.insert(funcname.clone(), vec![]);
-                        func_name_to_arg_sizes.insert(funcname.clone(), vec![]);
+                        cur_func = Func{ name: funcname, args: vec![] };
+                        functions.push(cur_func.clone());
                     }
                     "DW_TAG_formal_parameter" => {
-                        func_name_to_arg_names.get_mut(&*cur_funcname.clone()).expect("REASON").push(argname);
-                        func_name_to_arg_locations.get_mut(&*cur_funcname.clone()).expect("REASON").push(argoffset);
-                        func_name_to_arg_sizes.get_mut(&*cur_funcname.clone()).expect("REASON").push(bytesize);
+                        let mut arg = Arg{name: argname, location: argoffset, bytes_cnt: bytesize};
+                        functions.last_mut().unwrap().args.push(arg);
                     }
                     _ => {}
                 }
             }
         }
     }
-    println!("funcname keys");
-    for funcName in func_name_to_arg_names.keys() {
-        println!("{}", funcName);
-        println!("{:?}", func_name_to_arg_names.get(&*funcName.clone()));
-        println!("{:?}", func_name_to_arg_locations.get(&*funcName.clone()));
-        println!("{:?}", func_name_to_arg_sizes.get(&*funcName.clone()));
+    for function in functions {
+        println!("{}", function.name);
+        for arg in function.args {
+            println!("{}", arg.name);
+            println!("{}", arg.bytes_cnt);
+            println!("{}", arg.location);
+        }
+        println!();
     }
     Ok(())
 }
