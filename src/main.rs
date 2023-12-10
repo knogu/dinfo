@@ -1325,6 +1325,7 @@ fn dump_entries<R: Reader, W: Write>(
 
     let mut cur_funcname = "".to_string();
     let mut func_name_to_arg_names: HashMap<String, Vec<String>> = HashMap::new();
+    let mut func_name_to_arg_locations: HashMap<String, Vec<i64>> = HashMap::new();
     let mut entries = unit.entries_raw(None)?;
     println!("before loop");
     while !entries.is_empty() {
@@ -1354,7 +1355,7 @@ fn dump_entries<R: Reader, W: Write>(
 
         let mut funcname = "".to_string();
         let mut argname = "".to_string();
-
+        let mut argoffset = 0;
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
             w.write_all(spaces(&mut spaces_buf, indent).as_bytes())?;
@@ -1364,6 +1365,9 @@ fn dump_entries<R: Reader, W: Write>(
                 if n == "DW_AT_name" {
                     funcname = get_func_name::<R, W>(&attr, dwarf);
                     argname = get_arg_name::<R, W>(&attr)
+                }
+                if n == "DW_AT_location" {
+                    argoffset = get_arg_loc::<R, W>(w, &attr, &unit);
                 }
                 write!(w, "{}{} ", n, spaces(&mut spaces_buf, right_padding))?;
             } else {
@@ -1386,10 +1390,12 @@ fn dump_entries<R: Reader, W: Write>(
                 match rev_val.tag().to_string().as_str() {
                     "DW_TAG_subprogram" => {
                         cur_funcname = funcname.clone();
-                        func_name_to_arg_names.insert(funcname, vec![]);
+                        func_name_to_arg_names.insert(funcname.clone(), vec![]);
+                        func_name_to_arg_locations.insert(funcname.clone(), vec![]);
                     }
                     "DW_TAG_formal_parameter" => {
-                        func_name_to_arg_names.get_mut(&*cur_funcname.clone()).expect("REASON").push(argname)
+                        func_name_to_arg_names.get_mut(&*cur_funcname.clone()).expect("REASON").push(argname);
+                        func_name_to_arg_locations.get_mut(&*cur_funcname.clone()).expect("REASON").push(argoffset);
                     }
                     _ => {}
                 }
@@ -1400,6 +1406,7 @@ fn dump_entries<R: Reader, W: Write>(
     for funcName in func_name_to_arg_names.keys() {
         println!("{}", funcName);
         println!("{:?}", func_name_to_arg_names.get(&*funcName.clone()));
+        println!("{:?}", func_name_to_arg_locations.get(&*funcName.clone()));
     }
     Ok(())
 }
@@ -1422,6 +1429,68 @@ fn get_func_name<R: Reader, W: Write> (
         }
         _ => {return "".to_string();}
     }
+}
+
+fn get_arg_loc<R: Reader, W: Write> (
+    w: &mut W,
+    attr: &gimli::Attribute<R>,
+    unit: &gimli::Unit<R>,
+) -> i64 {
+    let value = attr.value();
+    match value {
+        gimli::AttributeValue::Exprloc(ref data) => {
+            // if let gimli::AttributeValue::Exprloc(_) = attr.raw_value() {
+            //     write!(w, "len 0x{:04x}: ", data.0.len())?;
+            //     for byte in data.0.to_slice()?.iter() {
+            //         write!(w, "{:02x}", byte)?;
+            //     }
+            //     write!(w, ": ")?;
+            // }
+            // writeln!(w, "dumping")?;
+            return get_frame_offset_by_data(w, unit.encoding(), data).unwrap();
+        }
+        _ => {return 0;}
+    }
+}
+
+// from dump_exprloc
+fn get_frame_offset_by_data<R: Reader, W: Write>(
+    w: &mut W,
+    encoding: gimli::Encoding,
+    data: &gimli::Expression<R>,
+) -> Result<(i64)> {
+    let mut pc = data.0.clone();
+    while pc.len() != 0 {
+        let pc_clone = pc.clone();
+        return match gimli::Operation::parse(&mut pc, encoding) {
+            Ok(op) => {
+                get_frame_offset(w, encoding, pc_clone, op)
+            }
+            _ => Err(Error::IoError)
+        }
+    }
+
+    return Err(Error::IoError);
+}
+
+// from dump_op
+fn get_frame_offset<R: Reader, W: Write>(
+    w: &mut W,
+    encoding: gimli::Encoding,
+    mut pc: R,
+    op: gimli::Operation<R>,
+) -> Result<(i64)> {
+    let dwop = gimli::DwOp(pc.read_u8()?);
+    writeln!(io::stdout(), "{}", dwop)?;
+    write!(w, "{}", dwop)?;
+    return match op {
+        gimli::Operation::FrameOffset { offset } => {
+            write!(stdout(), " offset is:{}", offset)?;
+            write!(w, " {}", offset)?;
+            Ok(offset)
+        }
+        _  => { Err(Error::IoError) }
+    };
 }
 
 fn get_arg_name<R: Reader, W: Write> (
@@ -1851,6 +1920,7 @@ fn dump_op<R: Reader, W: Write>(
             }
         }
         gimli::Operation::FrameOffset { offset } => {
+            write!(stdout(), " offset is:{}", offset)?;
             write!(w, " {}", offset)?;
         }
         gimli::Operation::Call { offset } => match offset {
