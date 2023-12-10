@@ -2,7 +2,7 @@
 #![allow(unknown_lints)]
 
 use fallible_iterator::FallibleIterator;
-use gimli::{Abbreviation, Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
+use gimli::{Abbreviation, Attribute, Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
 use object::{Object, ObjectSection, ObjectSymbol};
 use regex::bytes::Regex;
 use std::borrow::Cow;
@@ -1326,13 +1326,15 @@ fn dump_entries<R: Reader, W: Write>(
     let mut cur_funcname = "".to_string();
     let mut func_name_to_arg_names: HashMap<String, Vec<String>> = HashMap::new();
     let mut func_name_to_arg_locations: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut func_name_to_arg_sizes: HashMap<String, Vec<u64>> = HashMap::new();
     let mut entries = unit.entries_raw(None)?;
     println!("before loop");
+    let mut offset2abbr: HashMap<UnitOffset, &Abbreviation> = HashMap::new();
     while !entries.is_empty() {
         let offset = entries.next_offset();
         let depth = entries.next_depth();
         let abbrev = entries.read_abbreviation()?;
-
+        // offset2abbr.insert(offset, abbrev.unwrap());
 
         let mut indent = if depth >= 0 {
             depth as usize * 2 + 2
@@ -1356,6 +1358,7 @@ fn dump_entries<R: Reader, W: Write>(
         let mut funcname = "".to_string();
         let mut argname = "".to_string();
         let mut argoffset = 0;
+        let mut bytesize = 0;
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
             w.write_all(spaces(&mut spaces_buf, indent).as_bytes())?;
@@ -1368,6 +1371,20 @@ fn dump_entries<R: Reader, W: Write>(
                 }
                 if n == "DW_AT_location" {
                     argoffset = get_arg_loc::<R, W>(w, &attr, &unit);
+                }
+                if n == "DW_AT_type" {
+                    match abbrev {
+                        None => {}
+                        Some(rev_val) => {
+                            match rev_val.tag().to_string().as_str() {
+                                "DW_TAG_formal_parameter" => {
+                                    bytesize = get_arg_byte_size::<R, W>(w, &attr, &unit);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
                 }
                 write!(w, "{}{} ", n, spaces(&mut spaces_buf, right_padding))?;
             } else {
@@ -1392,10 +1409,12 @@ fn dump_entries<R: Reader, W: Write>(
                         cur_funcname = funcname.clone();
                         func_name_to_arg_names.insert(funcname.clone(), vec![]);
                         func_name_to_arg_locations.insert(funcname.clone(), vec![]);
+                        func_name_to_arg_sizes.insert(funcname.clone(), vec![]);
                     }
                     "DW_TAG_formal_parameter" => {
                         func_name_to_arg_names.get_mut(&*cur_funcname.clone()).expect("REASON").push(argname);
                         func_name_to_arg_locations.get_mut(&*cur_funcname.clone()).expect("REASON").push(argoffset);
+                        func_name_to_arg_sizes.get_mut(&*cur_funcname.clone()).expect("REASON").push(bytesize);
                     }
                     _ => {}
                 }
@@ -1407,6 +1426,7 @@ fn dump_entries<R: Reader, W: Write>(
         println!("{}", funcName);
         println!("{:?}", func_name_to_arg_names.get(&*funcName.clone()));
         println!("{:?}", func_name_to_arg_locations.get(&*funcName.clone()));
+        println!("{:?}", func_name_to_arg_sizes.get(&*funcName.clone()));
     }
     Ok(())
 }
@@ -1504,6 +1524,34 @@ fn get_arg_name<R: Reader, W: Write> (
             return s.to_string_lossy().unwrap().parse().unwrap();
         }
         _ => {return "".to_string();}
+    }
+}
+
+fn get_arg_byte_size<R: Reader, W: Write>(
+    w: &mut W,
+    attr: &gimli::Attribute<R>,
+    unit: &gimli::Unit<R>,
+) -> u64 {
+    let value = attr.value();
+    match value {
+        gimli::AttributeValue::UnitRef(offset) => {
+            match offset.to_unit_section_offset(unit) {
+                UnitSectionOffset::DebugInfoOffset(goff) => {
+                    // write!(w, "<.debug_info+0x{:08x}>", goff.0)?;
+                    // writeln!(stdout(), "<.debug_info+0x{:08x}>", goff.0)?;
+                    let byte_size = unit.entry(offset).unwrap().attr(gimli::DW_AT_byte_size);
+                    match byte_size {
+                        Ok(s) => {match s {
+                            None => {return 0;}
+                            Some(byte_size) => {return byte_size.value().udata_value().unwrap();}
+                        }}
+                        Err(_) => {return 0;}
+                    }
+                }
+                _ => {return 0;}
+            }
+        }
+        _ => {return 0;}
     }
 }
 
@@ -1613,6 +1661,15 @@ fn dump_attr_value<R: Reader, W: Write>(
             match offset.to_unit_section_offset(unit) {
                 UnitSectionOffset::DebugInfoOffset(goff) => {
                     write!(w, "<.debug_info+0x{:08x}>", goff.0)?;
+                    writeln!(stdout(), "<.debug_info+0x{:08x}>", goff.0)?;
+                    let byte_size = unit.entry(offset).unwrap().attr(gimli::DW_AT_byte_size);
+                    match byte_size {
+                        Ok(s) => {match s {
+                            None => {}
+                            Some(byte_size) => {println!("byte_size: {:?}", byte_size.value().udata_value().unwrap());}
+                        }}
+                        Err(_) => {}
+                    }
                 }
                 UnitSectionOffset::DebugTypesOffset(goff) => {
                     write!(w, "<.debug_types+0x{:08x}>", goff.0)?;
