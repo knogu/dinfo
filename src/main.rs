@@ -290,13 +290,6 @@ fn print_usage(opts: &getopts::Options) -> ! {
 fn main() {
     let mut opts = getopts::Options::new();
 
-    opts.optopt(
-        "",
-        "dwo-parent",
-        "use the specified file as the parent of the dwo or dwp (e.g. for .debug_addr)",
-        "library path",
-    );
-
     let matches = match opts.parse(env::args().skip(1)) {
         Ok(m) => m,
         Err(e) => {
@@ -308,53 +301,14 @@ fn main() {
         print_usage(&opts);
     }
 
-    let mut flags = Flags::default();
-
-    let arena_mmap = Arena::new();
-    let load_file = |path| {
-        let file = match fs::File::open(&path) {
-            Ok(file) => file,
-            Err(err) => {
-                eprintln!("Failed to open file '{}': {}", path, err);
-                process::exit(1);
-            }
-        };
-        let mmap = match unsafe { memmap2::Mmap::map(&file) } {
-            Ok(mmap) => mmap,
-            Err(err) => {
-                eprintln!("Failed to map file '{}': {}", path, err);
-                process::exit(1);
-            }
-        };
-        let mmap_ref = arena_mmap.alloc(mmap);
-        match object::File::parse(&**mmap_ref) {
-            Ok(file) => Some(file),
-            Err(err) => {
-                eprintln!("Failed to parse file '{}': {}", path, err);
-                process::exit(1);
-            }
-        }
-    };
-
-    flags.dwo_parent = matches.opt_str("dwo-parent").and_then(load_file);
-    if flags.dwo_parent.is_some() && !flags.dwo && !flags.dwp {
-        eprintln!("--dwo-parent also requires --dwo or --dwp");
-        process::exit(1);
-    }
-    if flags.dwo_parent.is_none() && flags.dwp {
-        eprintln!("--dwp also requires --dwo-parent");
-        process::exit(1);
-    }
-
     for file_path in &matches.free {
-        let res = get_func_info(file_path, &flags);
+        let res = get_func_info(file_path);
         println!("{:?}", res.unwrap());
     }
 }
 
 // 構造体の初期化でこれやって、構造体のメンバとして関数名→Func, のmap持ちたい
-// flagsはちゃんと中身見れば多分なくせるんでは
-fn get_func_info(file_path: &String, flags: &Flags) -> Result<Vec<Func>> {
+fn get_func_info(file_path: &String) -> Result<Vec<Func>> {
     let file = match fs::File::open(&file_path) {
         Ok(file) => file,
         Err(err) => {
@@ -382,7 +336,7 @@ fn get_func_info(file_path: &String, flags: &Flags) -> Result<Vec<Func>> {
     } else {
         gimli::RunTimeEndian::Big
     };
-    return dump_file(&file, endian, &flags);
+    return dump_file(&file, endian);
 }
 
 fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
@@ -424,49 +378,12 @@ fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
     })
 }
 
-fn dump_file<Endian>(file: &object::File, endian: Endian, flags: &Flags) -> Result<Vec<Func>>
+fn dump_file<Endian>(file: &object::File, endian: Endian) -> Result<Vec<Func>>
     where
         Endian: gimli::Endianity + Send + Sync,
 {
     let arena_data = Arena::new();
     let arena_relocations = Arena::new();
-
-    let dwo_parent = if let Some(dwo_parent_file) = flags.dwo_parent.as_ref() {
-        let mut load_dwo_parent_section = |id: gimli::SectionId| -> Result<_> {
-            load_file_section(
-                id,
-                dwo_parent_file,
-                endian,
-                false,
-                &arena_data,
-                &arena_relocations,
-            )
-        };
-        Some(gimli::Dwarf::load(&mut load_dwo_parent_section)?)
-    } else {
-        None
-    };
-    let dwo_parent = dwo_parent.as_ref();
-
-    let dwo_parent_units = if let Some(dwo_parent) = dwo_parent {
-        Some(
-            match dwo_parent
-                .units()
-                .map(|unit_header| dwo_parent.unit(unit_header))
-                .filter_map(|unit| Ok(unit.dwo_id.map(|dwo_id| (dwo_id, unit))))
-                .collect()
-            {
-                Ok(units) => units,
-                Err(err) => {
-                    eprintln!("Failed to process --dwo-parent units: {}", err);
-                    return Ok((vec![]));
-                }
-            },
-        )
-    } else {
-        None
-    };
-    let dwo_parent_units = dwo_parent_units.as_ref();
 
     let mut load_section = |id: gimli::SectionId| -> Result<_> {
         load_file_section(
@@ -485,7 +402,7 @@ fn dump_file<Endian>(file: &object::File, endian: Endian, flags: &Flags) -> Resu
 
     dwarf.populate_abbreviations_cache(gimli::AbbreviationsCacheStrategy::All);
 
-    return Ok(dump_info(w, &dwarf, dwo_parent_units)?);
+    return Ok(dump_info(w, &dwarf)?);
 }
 
 fn dump_dwp<R: Reader, W: Write + Send>(
@@ -504,7 +421,6 @@ fn dump_dwp<R: Reader, W: Write + Send>(
                 w,
                 &dwp,
                 dwo_parent,
-                dwo_parent_units,
                 dwp.cu_index.sections(i)?,
             )?;
             for func in res {
@@ -519,7 +435,6 @@ fn dump_dwp<R: Reader, W: Write + Send>(
                 w,
                 &dwp,
                 dwo_parent,
-                dwo_parent_units,
                 dwp.tu_index.sections(i)?,
             )?;
             for func in res {
@@ -535,20 +450,18 @@ fn dump_dwp_sections<R: Reader, W: Write + Send>(
     w: &mut W,
     dwp: &gimli::DwarfPackage<R>,
     dwo_parent: &gimli::Dwarf<R>,
-    dwo_parent_units: Option<&HashMap<gimli::DwoId, gimli::Unit<R>>>,
     sections: gimli::UnitIndexSectionIterator<R>,
 ) -> Result<Vec<Func>>
     where
         R::Endian: Send + Sync,
 {
     let dwarf = dwp.sections(sections, dwo_parent)?;
-    return Ok(dump_info(w, &dwarf, dwo_parent_units)?);
+    return Ok(dump_info(w, &dwarf)?);
 }
 
 fn dump_info<R: Reader, W: Write + Send>(
     w: &mut W,
     dwarf: &gimli::Dwarf<R>,
-    dwo_parent_units: Option<&HashMap<gimli::DwoId, gimli::Unit<R>>>,
 ) -> Result<Vec<Func>>
     where
         R::Endian: Send + Sync,
@@ -567,7 +480,7 @@ fn dump_info<R: Reader, W: Write + Send>(
     };
     let mut res: Vec<Func> = vec![];
     for unit in units {
-        for func in dump_unit(w, unit, dwarf, dwo_parent_units)? {
+        for func in dump_unit(w, unit, dwarf)? {
             res.push(func)
         }
     }
@@ -578,23 +491,14 @@ fn dump_unit<R: Reader, W: Write>(
     w: &mut W,
     header: UnitHeader<R>,
     dwarf: &gimli::Dwarf<R>,
-    dwo_parent_units: Option<&HashMap<gimli::DwoId, gimli::Unit<R>>>,
 ) -> Result<Vec<Func>> {
-    let mut unit = match dwarf.unit(header) {
+    let unit = match dwarf.unit(header) {
         Ok(unit) => unit,
         Err(err) => {
             writeln_error(w, dwarf, err.into(), "Failed to parse unit root entry")?;
             return Ok((vec![]));
         }
     };
-
-    if let Some(dwo_parent_units) = dwo_parent_units {
-        if let Some(dwo_id) = unit.dwo_id {
-            if let Some(parent_unit) = dwo_parent_units.get(&dwo_id) {
-                unit.copy_relocated_attributes(parent_unit);
-            }
-        }
-    }
 
     let entries_result = dump_entries::<R, W>(unit, dwarf);
     if let Err(err) = entries_result {
