@@ -1325,6 +1325,7 @@ struct Func {
 struct Arg {
     name: String,
     location: i64,
+    type_name: String,
     bytes_cnt: u64,
 }
 
@@ -1370,6 +1371,7 @@ fn dump_entries<R: Reader, W: Write>(
         let mut argname = "".to_string();
         let mut argoffset = 0;
         let mut bytesize = 0;
+        let mut typename = "".to_string();
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
             w.write_all(spaces(&mut spaces_buf, indent).as_bytes())?;
@@ -1390,6 +1392,7 @@ fn dump_entries<R: Reader, W: Write>(
                             match rev_val.tag().to_string().as_str() {
                                 "DW_TAG_formal_parameter" => {
                                     bytesize = get_arg_byte_size::<R, W>(w, &attr, &unit);
+                                    typename = get_arg_type_name::<R, W>(w, &attr, &unit, dwarf);
                                 }
                                 _ => {}
                             }
@@ -1421,7 +1424,7 @@ fn dump_entries<R: Reader, W: Write>(
                         functions.push(cur_func.clone());
                     }
                     "DW_TAG_formal_parameter" => {
-                        let mut arg = Arg{name: argname, location: argoffset, bytes_cnt: bytesize};
+                        let mut arg = Arg{name: argname, location: argoffset, bytes_cnt: bytesize, type_name: typename};
                         functions.last_mut().unwrap().args.push(arg);
                     }
                     _ => {}
@@ -1435,6 +1438,7 @@ fn dump_entries<R: Reader, W: Write>(
             println!("{}", arg.name);
             println!("{}", arg.bytes_cnt);
             println!("{}", arg.location);
+            println!("{}", arg.type_name);
         }
         println!();
     }
@@ -1565,6 +1569,72 @@ fn get_arg_byte_size<R: Reader, W: Write>(
     }
 }
 
+fn get_arg_type_name<R: Reader, W: Write>(
+    w: &mut W,
+    attr: &gimli::Attribute<R>,
+    unit: &gimli::Unit<R>,
+    dwarf: &gimli::Dwarf<R>,
+) -> String {
+    let value = attr.value();
+    match value {
+        gimli::AttributeValue::UnitRef(offset) => {
+            match offset.to_unit_section_offset(unit) {
+                UnitSectionOffset::DebugInfoOffset(goff) => {
+                    // write!(w, "<.debug_info+0x{:08x}>", goff.0)?;
+                    // writeln!(stdout(), "<.debug_info+0x{:08x}>", goff.0)?;
+                    let die = unit.entry(offset).unwrap();
+                    // println!("die's tag is {}", die.tag());
+                    match die.tag() {
+                        gimli::DW_TAG_base_type => {
+                            let type_name = die.attr(gimli::DW_AT_name);
+                            match type_name {
+                                Ok(s) => {match s {
+                                    None => {return "".to_string();}
+                                    Some(typename) => {
+                                        println!("{:?}", typename.value());
+                                        match typename.value() {
+                                            gimli::AttributeValue::DebugStrRef(offset) => {
+                                                if let Ok(s) = dwarf.debug_str.get_str(offset) {
+                                                    // println!("The string ref is: {:?}", s.to_string_lossy());
+                                                    // writeln!(stdout(), "typename is {}", s.to_string_lossy().unwrap());
+                                                    return s.to_string_lossy().unwrap().to_string();
+                                                    // return s.to_string_lossy().unwrap().parse().unwrap();
+                                                } else {
+                                                    // writeln!(w, "<.debug_str+0x{:08x}>", offset.0)?;
+                                                    return "".to_string();
+                                                }
+                                            }
+                                            gimli::AttributeValue::String(s) => {
+                                                // println!("The string is: {:?}", s.to_string_lossy()?);
+                                                // writeln!(w, "{}", s.to_string_lossy()?)?;
+                                                let typename: String = s.to_string_lossy().unwrap().parse().unwrap();
+                                                // println!("typename is {}", typename);
+                                                return typename;
+                                            }
+                                            _ => {return "".to_string();}
+                                        }
+                                        return "".to_string();
+                                    }
+                                }}
+                                Err(_) => {return "".to_string();}
+                            }
+                        }
+                        gimli::DW_TAG_pointer_type => {
+                            println!("pointer type");
+                            let base = die.attr(gimli::DW_AT_type);
+                            return "Ptr[".to_string() + &get_arg_type_name(w, &base.unwrap().unwrap(), unit, dwarf) + "]";
+                        }
+                        _ => {return "".to_string();}
+                    }
+
+                }
+                _ => {return "".to_string();}
+            }
+        }
+        _ => {return "".to_string();}
+    }
+}
+
 fn dump_attr_value<R: Reader, W: Write>(
     w: &mut W,
     attr: &gimli::Attribute<R>,
@@ -1632,6 +1702,7 @@ fn dump_attr_value<R: Reader, W: Write>(
                     writeln!(w, "{}", data)?;
                 }
                 _ => {
+                    writeln!(stdout(), "0x{:08x}", data)?;
                     writeln!(w, "0x{:08x}", data)?;
                 }
             };
