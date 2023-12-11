@@ -1,6 +1,6 @@
 // main.c
 
-#include "rust_interface.h"
+#include "test.h"
 
 
 int main() {
