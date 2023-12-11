@@ -15,9 +15,11 @@ use std::io::{BufWriter, stdout, Write};
 use std::iter::Iterator;
 use std::process;
 use std::result;
+use std::sync::Mutex;
 use getopts::Matches;
 use regex::Match;
 use typed_arena::Arena;
+use once_cell::unsync::Lazy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -302,13 +304,15 @@ fn main() {
     }
 
     for file_path in &matches.free {
-        let res = get_func_info(file_path);
-        println!("{:?}", res.unwrap());
+        for (fname, args) in get_func_info(file_path).unwrap() {
+            println!("{}", fname);
+            println!("{:?}", args);
+        }
     }
 }
 
 // 構造体の初期化でこれやって、構造体のメンバとして関数名→Func, のmap持ちたい
-fn get_func_info(file_path: &String) -> Result<Vec<Func>> {
+fn get_func_info(file_path: &String) -> Result<HashMap<String, Vec<Arg>>> {
     let file = match fs::File::open(&file_path) {
         Ok(file) => file,
         Err(err) => {
@@ -378,7 +382,7 @@ fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
     })
 }
 
-fn dump_file<Endian>(file: &object::File, endian: Endian) -> Result<Vec<Func>>
+fn dump_file<Endian>(file: &object::File, endian: Endian) -> Result<HashMap<String, Vec<Arg>>>
     where
         Endian: gimli::Endianity + Send + Sync,
 {
@@ -409,12 +413,11 @@ fn dump_dwp<R: Reader, W: Write + Send>(
     w: &mut W,
     dwp: &gimli::DwarfPackage<R>,
     dwo_parent: &gimli::Dwarf<R>,
-    dwo_parent_units: Option<&HashMap<gimli::DwoId, gimli::Unit<R>>>,
-) -> Result<Vec<Func>>
+) -> Result<HashMap<String, Vec<Arg>>>
     where
         R::Endian: Send + Sync,
 {
-    let mut funcs = vec![];
+    let mut ret: HashMap<String, Vec<Arg>> = HashMap::new();
     if dwp.cu_index.unit_count() != 0 {
         for i in 1..=dwp.cu_index.unit_count() {
             let res = dump_dwp_sections(
@@ -423,8 +426,8 @@ fn dump_dwp<R: Reader, W: Write + Send>(
                 dwo_parent,
                 dwp.cu_index.sections(i)?,
             )?;
-            for func in res {
-                funcs.push(func)
+            for (fname, args) in res {
+                ret.insert(fname, args);
             }
         }
     }
@@ -437,13 +440,13 @@ fn dump_dwp<R: Reader, W: Write + Send>(
                 dwo_parent,
                 dwp.tu_index.sections(i)?,
             )?;
-            for func in res {
-                funcs.push(func)
+            for (fname, args) in res {
+                ret.insert(fname, args);
             }
         }
     }
 
-    Ok(funcs)
+    Ok(ret)
 }
 
 fn dump_dwp_sections<R: Reader, W: Write + Send>(
@@ -451,7 +454,7 @@ fn dump_dwp_sections<R: Reader, W: Write + Send>(
     dwp: &gimli::DwarfPackage<R>,
     dwo_parent: &gimli::Dwarf<R>,
     sections: gimli::UnitIndexSectionIterator<R>,
-) -> Result<Vec<Func>>
+) -> Result<HashMap<String, Vec<Arg>>>
     where
         R::Endian: Send + Sync,
 {
@@ -462,7 +465,7 @@ fn dump_dwp_sections<R: Reader, W: Write + Send>(
 fn dump_info<R: Reader, W: Write + Send>(
     w: &mut W,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<Vec<Func>>
+) -> Result<HashMap<String, Vec<Arg>>>
     where
         R::Endian: Send + Sync,
 {
@@ -475,13 +478,13 @@ fn dump_info<R: Reader, W: Write + Send>(
                 Error::GimliError(err),
                 "Failed to read unit headers",
             )?;
-            return Ok(vec![]);
+            return Ok(HashMap::new());
         }
     };
-    let mut res: Vec<Func> = vec![];
+    let mut res: HashMap<String, Vec<Arg>> = HashMap::new();
     for unit in units {
-        for func in dump_unit(w, unit, dwarf)? {
-            res.push(func)
+        for (fname, args) in dump_unit(w, unit, dwarf)? {
+            res.insert(fname, args);
         }
     }
     return Ok(res);
@@ -491,12 +494,12 @@ fn dump_unit<R: Reader, W: Write>(
     w: &mut W,
     header: UnitHeader<R>,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<Vec<Func>> {
+) -> Result<HashMap<String, Vec<Arg>>> {
     let unit = match dwarf.unit(header) {
         Ok(unit) => unit,
         Err(err) => {
             writeln_error(w, dwarf, err.into(), "Failed to parse unit root entry")?;
-            return Ok((vec![]));
+            return Ok((HashMap::new()));
         }
     };
 
@@ -524,15 +527,16 @@ struct Arg {
 fn dump_entries<R: Reader, W: Write>(
     unit: gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<Vec<Func>> {
+) -> Result<HashMap<String, Vec<Arg>>> {
+    let mut fname2args: HashMap<String, Vec<Arg>> = HashMap::new();
+    let mut cur_funcname = "".to_string();
 
-    let mut cur_func = Func{ name: "".to_string(), args: vec![] };
-    let mut functions: Vec<Func> = vec![];
     let mut entries = unit.entries_raw(None)?;
     while !entries.is_empty() {
         let abbrev = entries.read_abbreviation()?;
 
         let mut funcname = "".to_string();
+
         let mut argname = "".to_string();
         let mut argoffset = 0;
         let mut bytesize = 0;
@@ -570,19 +574,19 @@ fn dump_entries<R: Reader, W: Write>(
             Some(rev_val) => {
                 match rev_val.tag().to_string().as_str() {
                     "DW_TAG_subprogram" => {
-                        cur_func = Func{ name: funcname, args: vec![] };
-                        functions.push(cur_func.clone());
+                        cur_funcname = funcname;
+                        fname2args.insert(cur_funcname.clone(), vec![]);
                     }
                     "DW_TAG_formal_parameter" => {
                         let arg = Arg{name: argname, location: argoffset, bytes_cnt: bytesize, type_name: typename};
-                        functions.last_mut().unwrap().args.push(arg);
+                        fname2args.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
                     }
                     _ => {}
                 }
             }
         }
     }
-    Ok(functions)
+    Ok(fname2args)
 }
 
 fn get_func_name<R: Reader, W: Write> (
