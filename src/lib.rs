@@ -9,6 +9,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{c_char, CStr};
+use std::ffi::CString;
 use std::fmt::{self, Debug};
 use std::fs;
 use std::io;
@@ -16,6 +17,7 @@ use std::io::{BufWriter, stdout, Write};
 use std::iter::Iterator;
 use std::process;
 use std::result;
+use std::string::ParseError;
 use std::sync::Mutex;
 use getopts::Matches;
 use regex::Match;
@@ -331,6 +333,23 @@ pub extern "C" fn get_vec_len(m: *mut HashMap<String, Vec<Arg>>, key: *const c_c
     }
 }
 
+#[no_mangle]
+pub extern "C" fn get_ith_arg(m: *mut HashMap<String, Vec<Arg>>, key: *const c_char, i: usize) -> CArg {
+    let m = unsafe { &*m };
+    let key = unsafe { CStr::from_ptr(key).to_str().unwrap().to_string() };
+    match m.get(&key) {
+        Some(v) => {
+            println!("{:?}", (*v.get(i).unwrap()).clone());
+            let arg = (*v.get(i).unwrap()).clone();
+            return convert_arg(&arg);
+        },
+        None => {
+            let arg = Arg{name: "dummy".to_string(), location: 0, type_name: "dummy".to_string(), bytes_cnt: 0};
+            return convert_arg(&arg);
+        },
+    }
+}
+
 // 構造体の初期化でこれやって、構造体のメンバとして関数名→Func, のmap持ちたい
 fn get_func_info(file_path: &String) -> Result<HashMap<String, Vec<Arg>>> {
     let file = match fs::File::open(&file_path) {
@@ -538,10 +557,29 @@ struct Func {
 
 #[derive(Clone, Debug)]
 pub struct Arg {
-    name: String,
-    location: i64,
-    type_name: String,
-    bytes_cnt: u64,
+    pub name: String,
+    pub location: i64,
+    pub type_name: String,
+    pub bytes_cnt: u64,
+}
+
+#[repr(C)]
+pub struct CArg {
+    pub name: *const c_char,
+    pub location: i64,
+    pub type_name: *const c_char,
+    pub bytes_cnt: u64,
+}
+
+pub fn convert_arg(arg: &Arg) -> CArg {
+    let name = CString::new(arg.name.clone()).unwrap().into_raw();
+    let type_name = CString::new(arg.type_name.clone()).unwrap().into_raw();
+    CArg {
+        name,
+        location: arg.location,
+        type_name,
+        bytes_cnt: arg.bytes_cnt,
+    }
 }
 
 fn dump_entries<R: Reader, W: Write>(

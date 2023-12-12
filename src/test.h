@@ -12,4 +12,5 @@ typedef struct {
 // Rustの関数のプロトタイプ
 extern void* get_func2args(const char* file_path);
 extern size_t get_vec_len(void* map, const char* key);
+extern Arg get_ith_arg(void* map, const char* key, size_t i);
 //extern void free_map(void* map);
