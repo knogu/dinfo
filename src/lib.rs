@@ -324,10 +324,10 @@ pub extern "C" fn get_func2args(file_path: *const c_char) -> *mut HashMap<String
 }
 
 #[no_mangle]
-pub extern "C" fn get_vec_len(m: *mut HashMap<String, Vec<Arg>>, key: *const c_char) -> usize {
+pub extern "C" fn get_arg_count(m: *mut HashMap<String, Vec<Arg>>, funcname: *const c_char) -> usize {
     let m = unsafe { &*m };
-    let key = unsafe { CStr::from_ptr(key).to_str().unwrap().to_string() };
-    match m.get(&key) {
+    let funcname = unsafe { CStr::from_ptr(funcname).to_str().unwrap().to_string() };
+    match m.get(&funcname) {
         Some(v) => v.len(),
         None => 0,
     }
