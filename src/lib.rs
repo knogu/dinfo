@@ -19,7 +19,6 @@ use std::process;
 use std::result;
 use std::string::ParseError;
 use std::sync::Mutex;
-use getopts::Matches;
 use regex::Match;
 use typed_arena::Arena;
 use once_cell::unsync::Lazy;
@@ -604,7 +603,7 @@ fn dump_entries<R: Reader, W: Write>(
             if let Some(n) = attr.name().static_string() {
                 if n == "DW_AT_name" {
                     funcname = get_func_name::<R, W>(&attr, dwarf);
-                    argname = get_arg_name::<R, W>(&attr)
+                    argname = get_arg_name::<R, W>(&attr, dwarf);
                 }
                 if n == "DW_AT_location" {
                     argoffset = get_arg_loc::<R, W>(&attr, &unit);
@@ -707,15 +706,26 @@ fn get_frame_offset<R: Reader, W: Write>(
     };
 }
 
+// from dump_attr_value?
 fn get_arg_name<R: Reader, W: Write> (
     attr: &gimli::Attribute<R>,
+    dwarf: &gimli::Dwarf<R>,
 ) -> String {
     let value = attr.value();
     return match value {
         gimli::AttributeValue::String(s) => {
             s.to_string_lossy().unwrap().parse().unwrap()
         }
-        _ => { "".to_string() }
+        gimli::AttributeValue::DebugStrRef(offset) => {
+            if let Ok(s) = dwarf.debug_str.get_str(offset) {
+                return s.to_string_lossy().unwrap().parse().unwrap();
+            } else {
+                return "".to_string();
+            }
+        }
+        _ => {
+            "arg name not caught".to_string()
+        }
     }
 }
 
@@ -789,7 +799,34 @@ fn get_arg_type_name<R: Reader, W: Write>(
                             let base = die.attr(gimli::DW_AT_type);
                             "Ptr[".to_string() + &get_arg_type_name::<R, W>(&base.unwrap().unwrap(), unit, dwarf) + "]"
                         }
-                        _ => { "".to_string() }
+                        gimli::DW_TAG_structure_type => {
+                            let type_name = die.attr(gimli::DW_AT_name);
+                            match type_name {
+                                Ok(s) => {
+                                    match s {
+                                        None => { "".to_string() }
+                                        Some(typename) => {
+                                            return match typename.value() {
+                                                gimli::AttributeValue::DebugStrRef(offset) => {
+                                                    if let Ok(s) = dwarf.debug_str.get_str(offset) {
+                                                        s.to_string_lossy().unwrap().to_string()
+                                                    } else {
+                                                        "".to_string()
+                                                    }
+                                                }
+                                                gimli::AttributeValue::String(s) => {
+                                                    let typename: String = s.to_string_lossy().unwrap().parse().unwrap();
+                                                    typename
+                                                }
+                                                _ => { "".to_string() }
+                                            };
+                                        }
+                                    }
+                                }
+                                Err(_) => { "".to_string() }
+                            }
+                        }
+                        _ => { "type not caught".to_string() }
                     }
                 }
                 _ => { "".to_string() }

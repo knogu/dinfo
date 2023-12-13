@@ -1439,6 +1439,7 @@ fn dump_entries<R: Reader, W: Write>(
     Ok(())
 }
 
+// from dump_attr_value?
 fn get_func_name<R: Reader, W: Write> (
     attr: &gimli::Attribute<R>,
     dwarf: &gimli::Dwarf<R>,
