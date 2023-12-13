@@ -2,9 +2,8 @@
 #![allow(unknown_lints)]
 
 use fallible_iterator::FallibleIterator;
-use gimli::{Abbreviation, Attribute, Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
+use gimli::{Abbreviation, Attribute, DebuggingInformationEntry, Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
 use object::{File, Object, ObjectSection, ObjectSymbol};
-use regex::bytes::Regex;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
@@ -17,11 +16,7 @@ use std::io::{BufWriter, stdout, Write};
 use std::iter::Iterator;
 use std::process;
 use std::result;
-use std::string::ParseError;
-use std::sync::Mutex;
-use regex::Match;
 use typed_arena::Arena;
-use once_cell::unsync::Lazy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -600,46 +595,37 @@ fn dump_entries<R: Reader, W: Write>(
         let mut typename = "".to_string();
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
-            if let Some(n) = attr.name().static_string() {
-                if n == "DW_AT_name" {
+            match attr.name() {
+                gimli::DW_AT_name => {
                     funcname = get_func_name::<R, W>(&attr, dwarf);
                     argname = get_arg_name::<R, W>(&attr, dwarf);
                 }
-                if n == "DW_AT_location" {
+                gimli::DW_AT_location => {
                     argoffset = get_arg_loc::<R, W>(&attr, &unit);
                 }
-                if n == "DW_AT_type" {
-                    match abbrev {
-                        None => {}
-                        Some(rev_val) => {
-                            match rev_val.tag().to_string().as_str() {
-                                "DW_TAG_formal_parameter" => {
-                                    bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
-                                    typename = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
-                                }
-                                _ => {}
-                            }
+                gimli::DW_AT_type => {
+                    if let Some(rev_val) = abbrev {
+                        if let gimli::DW_TAG_formal_parameter = rev_val.tag() {
+                            bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
+                            typename = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
                         }
                     }
-
                 }
+                _ => {}
             }
         }
 
-        match abbrev {
-            None => {}
-            Some(rev_val) => {
-                match rev_val.tag().to_string().as_str() {
-                    "DW_TAG_subprogram" => {
-                        cur_funcname = funcname;
-                        fname2args.insert(cur_funcname.clone(), vec![]);
-                    }
-                    "DW_TAG_formal_parameter" => {
-                        let arg = Arg{name: argname, location: argoffset, bytes_cnt: bytesize, type_name: typename};
-                        fname2args.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
-                    }
-                    _ => {}
+        if let Some(rev_val) = abbrev {
+            match rev_val.tag() {
+                gimli::DW_TAG_subprogram => {
+                    cur_funcname = funcname;
+                    fname2args.insert(cur_funcname.clone(), vec![]);
                 }
+                gimli::DW_TAG_formal_parameter => {
+                    let arg = Arg{name: argname, location: argoffset, bytes_cnt: bytesize, type_name: typename};
+                    fname2args.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
+                }
+                _ => {}
             }
         }
     }
@@ -651,29 +637,22 @@ fn get_func_name<R: Reader, W: Write> (
     dwarf: &gimli::Dwarf<R>,
 ) -> String {
     let value = attr.value();
-    match value {
-        gimli::AttributeValue::DebugStrRef(offset) => {
-            if let Ok(s) = dwarf.debug_str.get_str(offset) {
-                return s.to_string_lossy().unwrap().parse().unwrap();
-            } else {
-                return "".to_string();
-            }
+    if let gimli::AttributeValue::DebugStrRef(offset) = value {
+        if let Ok(s) = dwarf.debug_str.get_str(offset) {
+            return s.to_string_lossy().unwrap().parse().unwrap();
         }
-        _ => {return "".to_string();}
     }
+    return "".to_string();
 }
 
 fn get_arg_loc<R: Reader, W: Write> (
     attr: &gimli::Attribute<R>,
     unit: &gimli::Unit<R>,
 ) -> i64 {
-    let value = attr.value();
-    return match value {
-        gimli::AttributeValue::Exprloc(ref data) => {
-            get_frame_offset_by_data::<R, W>(unit.encoding(), data).unwrap()
-        }
-        _ => { 0 }
+    if let gimli::AttributeValue::Exprloc(ref data) = attr.value() {
+        get_frame_offset_by_data::<R, W>(unit.encoding(), data).unwrap();
     }
+    0
 }
 
 // from dump_exprloc
@@ -734,26 +713,15 @@ fn get_arg_byte_size<R: Reader, W: Write>(
     unit: &gimli::Unit<R>,
 ) -> u64 {
     let value = attr.value();
-    return match value {
-        gimli::AttributeValue::UnitRef(offset) => {
-            match offset.to_unit_section_offset(unit) {
-                UnitSectionOffset::DebugInfoOffset(_) => {
-                    let byte_size = unit.entry(offset).unwrap().attr(gimli::DW_AT_byte_size);
-                    match byte_size {
-                        Ok(s) => {
-                            match s {
-                                None => { 0 }
-                                Some(byte_size) => { byte_size.value().udata_value().unwrap() }
-                            }
-                        }
-                        Err(_) => { 0 }
-                    }
-                }
-                _ => { 0 }
+    if let gimli::AttributeValue::UnitRef(offset) = value {
+        if let UnitSectionOffset::DebugInfoOffset(_) = offset.to_unit_section_offset(unit) {
+            let byte_size = unit.entry(offset).unwrap().attr(gimli::DW_AT_byte_size).unwrap();
+            if let Some(byte_size) = byte_size {
+                return byte_size.value().udata_value().unwrap();
             }
         }
-        _ => { 0 }
     }
+    0
 }
 
 fn get_arg_type_name<R: Reader, W: Write>(
@@ -762,76 +730,59 @@ fn get_arg_type_name<R: Reader, W: Write>(
     dwarf: &gimli::Dwarf<R>,
 ) -> String {
     let value = attr.value();
-    return match value {
-        gimli::AttributeValue::UnitRef(offset) => {
-            match offset.to_unit_section_offset(unit) {
-                UnitSectionOffset::DebugInfoOffset(_) => {
-                    let die = unit.entry(offset).unwrap();
-                    match die.tag() {
-                        gimli::DW_TAG_base_type => {
-                            let type_name = die.attr(gimli::DW_AT_name);
-                            match type_name {
-                                Ok(s) => {
-                                    match s {
-                                        None => { "".to_string() }
-                                        Some(typename) => {
-                                            return match typename.value() {
-                                                gimli::AttributeValue::DebugStrRef(offset) => {
-                                                    if let Ok(s) = dwarf.debug_str.get_str(offset) {
-                                                        s.to_string_lossy().unwrap().to_string()
-                                                    } else {
-                                                        "".to_string()
-                                                    }
-                                                }
-                                                gimli::AttributeValue::String(s) => {
-                                                    let typename: String = s.to_string_lossy().unwrap().parse().unwrap();
-                                                    typename
-                                                }
-                                                _ => { "".to_string() }
-                                            };
-                                        }
-                                    }
-                                }
-                                Err(_) => { "".to_string() }
-                            }
-                        }
-                        gimli::DW_TAG_pointer_type => {
-                            let base = die.attr(gimli::DW_AT_type);
-                            "Ptr[".to_string() + &get_arg_type_name::<R, W>(&base.unwrap().unwrap(), unit, dwarf) + "]"
-                        }
-                        gimli::DW_TAG_structure_type => {
-                            let type_name = die.attr(gimli::DW_AT_name);
-                            match type_name {
-                                Ok(s) => {
-                                    match s {
-                                        None => { "".to_string() }
-                                        Some(typename) => {
-                                            return match typename.value() {
-                                                gimli::AttributeValue::DebugStrRef(offset) => {
-                                                    if let Ok(s) = dwarf.debug_str.get_str(offset) {
-                                                        s.to_string_lossy().unwrap().to_string()
-                                                    } else {
-                                                        "".to_string()
-                                                    }
-                                                }
-                                                gimli::AttributeValue::String(s) => {
-                                                    let typename: String = s.to_string_lossy().unwrap().parse().unwrap();
-                                                    typename
-                                                }
-                                                _ => { "".to_string() }
-                                            };
-                                        }
-                                    }
-                                }
-                                Err(_) => { "".to_string() }
-                            }
-                        }
-                        _ => { "type not caught".to_string() }
-                    }
-                }
-                _ => { "".to_string() }
+    if let gimli::AttributeValue::UnitRef(offset) = value {
+        if let UnitSectionOffset::DebugInfoOffset(_) = offset.to_unit_section_offset(unit) {
+            let die = unit.entry(offset).unwrap();
+            return get_type_name_from_die::<R, W>(die, unit, dwarf).unwrap();
+        }
+    }
+    return "".to_string();
+}
+
+fn get_type_name_from_die<R: Reader, W: Write>(
+    die: DebuggingInformationEntry<R>,
+    unit: &gimli::Unit<R>,
+    dwarf: &gimli::Dwarf<R>,
+) -> Result<String> {
+    match die.tag() {
+        gimli::DW_TAG_base_type => {
+            let type_name = die.attr(gimli::DW_AT_name)?;
+            if let Some(typename) = type_name {
+                return Ok(get_type_name::<R, W>(&typename, dwarf))
+            }
+            return Ok("base type name is none".to_string())
+        }
+        gimli::DW_TAG_pointer_type => {
+            let base = die.attr(gimli::DW_AT_type);
+            return Ok("Ptr[".to_string() + &get_arg_type_name::<R, W>(&base.unwrap().unwrap(), unit, dwarf) + "]")
+        }
+        gimli::DW_TAG_structure_type => {
+            let type_name = die.attr(gimli::DW_AT_name)?;
+            if let Some(typename) = type_name {
+                return Ok(get_type_name::<R, W>(&typename, dwarf))
+            }
+            return Ok("struct type name is none".to_string())
+        }
+        _ => { return Ok("type not caught".to_string()) }
+    }
+}
+
+fn get_type_name<R: Reader, W: Write>(
+    typename: &gimli::Attribute<R>,
+    dwarf: &gimli::Dwarf<R>,
+) -> String {
+    return match typename.value() {
+        gimli::AttributeValue::DebugStrRef(offset) => {
+            if let Ok(s) = dwarf.debug_str.get_str(offset) {
+                s.to_string_lossy().unwrap().to_string()
+            } else {
+                "".to_string()
             }
         }
+        gimli::AttributeValue::String(s) => {
+            let typename: String = s.to_string_lossy().unwrap().parse().unwrap();
+            typename
+        }
         _ => { "".to_string() }
-    }
+    };
 }
