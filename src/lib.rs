@@ -310,7 +310,7 @@ fn print_usage(opts: &getopts::Options) -> ! {
 
 // Cから呼ぶ
 #[no_mangle]
-pub extern "C" fn get_func2args(file_path: *const c_char) -> *mut HashMap<String, Vec<Arg>> {
+pub extern "C" fn get_func2args(file_path: *const c_char) -> *mut HashMap<String, Vec<ArgOrMember>> {
     let file_path = unsafe { CStr::from_ptr(file_path).to_str().unwrap().to_string() };
     let map = get_func_info(&file_path).unwrap();
     let m = Box::new(map);
@@ -318,7 +318,7 @@ pub extern "C" fn get_func2args(file_path: *const c_char) -> *mut HashMap<String
 }
 
 #[no_mangle]
-pub extern "C" fn get_arg_count(m: *mut HashMap<String, Vec<Arg>>, funcname: *const c_char) -> usize {
+pub extern "C" fn get_arg_count(m: *mut HashMap<String, Vec<ArgOrMember>>, funcname: *const c_char) -> usize {
     let m = unsafe { &*m };
     let funcname = unsafe { CStr::from_ptr(funcname).to_str().unwrap().to_string() };
     match m.get(&funcname) {
@@ -328,7 +328,7 @@ pub extern "C" fn get_arg_count(m: *mut HashMap<String, Vec<Arg>>, funcname: *co
 }
 
 #[no_mangle]
-pub extern "C" fn get_ith_arg(m: *mut HashMap<String, Vec<Arg>>, key: *const c_char, i: usize) -> CArg {
+pub extern "C" fn get_ith_arg(m: *mut HashMap<String, Vec<ArgOrMember>>, key: *const c_char, i: usize) -> CArg {
     let m = unsafe { &*m };
     let key = unsafe { CStr::from_ptr(key).to_str().unwrap().to_string() };
     match m.get(&key) {
@@ -338,14 +338,14 @@ pub extern "C" fn get_ith_arg(m: *mut HashMap<String, Vec<Arg>>, key: *const c_c
             return convert_arg(&arg);
         },
         None => {
-            let arg = Arg{name: "dummy".to_string(), location: 0, type_name: "dummy".to_string(), bytes_cnt: 0};
+            let arg = ArgOrMember {is_arg: true, name: "dummy".to_string(), location: 0, type_name: "dummy".to_string(), bytes_cnt: 0};
             return convert_arg(&arg);
         },
     }
 }
 
 // 構造体の初期化でこれやって、構造体のメンバとして関数名→Func, のmap持ちたい
-fn get_func_info(file_path: &String) -> Result<HashMap<String, Vec<Arg>>> {
+fn get_func_info(file_path: &String) -> Result<HashMap<String, Vec<ArgOrMember>>> {
     let file = match fs::File::open(&file_path) {
         Ok(file) => file,
         Err(err) => {
@@ -415,7 +415,7 @@ fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
     })
 }
 
-fn dump_file<Endian>(file: &object::File, endian: Endian) -> Result<HashMap<String, Vec<Arg>>>
+fn dump_file<Endian>(file: &object::File, endian: Endian) -> Result<HashMap<String, Vec<ArgOrMember>>>
     where
         Endian: gimli::Endianity + Send + Sync,
 {
@@ -446,11 +446,11 @@ fn dump_dwp<R: Reader, W: Write + Send>(
     w: &mut W,
     dwp: &gimli::DwarfPackage<R>,
     dwo_parent: &gimli::Dwarf<R>,
-) -> Result<HashMap<String, Vec<Arg>>>
+) -> Result<HashMap<String, Vec<ArgOrMember>>>
     where
         R::Endian: Send + Sync,
 {
-    let mut ret: HashMap<String, Vec<Arg>> = HashMap::new();
+    let mut ret: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
     if dwp.cu_index.unit_count() != 0 {
         for i in 1..=dwp.cu_index.unit_count() {
             let res = dump_dwp_sections(
@@ -487,7 +487,7 @@ fn dump_dwp_sections<R: Reader, W: Write + Send>(
     dwp: &gimli::DwarfPackage<R>,
     dwo_parent: &gimli::Dwarf<R>,
     sections: gimli::UnitIndexSectionIterator<R>,
-) -> Result<HashMap<String, Vec<Arg>>>
+) -> Result<HashMap<String, Vec<ArgOrMember>>>
     where
         R::Endian: Send + Sync,
 {
@@ -498,7 +498,7 @@ fn dump_dwp_sections<R: Reader, W: Write + Send>(
 fn dump_info<R: Reader, W: Write + Send>(
     w: &mut W,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<HashMap<String, Vec<Arg>>>
+) -> Result<HashMap<String, Vec<ArgOrMember>>>
     where
         R::Endian: Send + Sync,
 {
@@ -514,7 +514,7 @@ fn dump_info<R: Reader, W: Write + Send>(
             return Ok(HashMap::new());
         }
     };
-    let mut res: HashMap<String, Vec<Arg>> = HashMap::new();
+    let mut res: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
     for unit in units {
         for (fname, args) in dump_unit(w, unit, dwarf)? {
             res.insert(fname, args);
@@ -527,7 +527,7 @@ fn dump_unit<R: Reader, W: Write>(
     w: &mut W,
     header: UnitHeader<R>,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<HashMap<String, Vec<Arg>>> {
+) -> Result<HashMap<String, Vec<ArgOrMember>>> {
     let unit = match dwarf.unit(header) {
         Ok(unit) => unit,
         Err(err) => {
@@ -546,29 +546,40 @@ fn dump_unit<R: Reader, W: Write>(
 #[derive(Clone, Debug)]
 struct Func {
     name: String,
-    args: Vec<Arg>,
+    args: Vec<ArgOrMember>,
 }
 
 #[derive(Clone, Debug)]
-pub struct Arg {
+struct Struct {
+    name: String,
+    args: Vec<ArgOrMember>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ArgOrMember { // argument or struct's member
+    pub is_arg: bool,
     pub name: String,
-    pub location: i64,
     pub type_name: String,
+    // For struct's member, offset in struct (DW_AT_data_member_location).
+    // For argument, offset from rbp
+    pub location: i64,
     pub bytes_cnt: u64,
 }
 
 #[repr(C)]
 pub struct CArg {
+    pub is_arg: bool,
     pub name: *const c_char,
     pub location: i64,
     pub type_name: *const c_char,
     pub bytes_cnt: u64,
 }
 
-pub fn convert_arg(arg: &Arg) -> CArg {
+pub fn convert_arg(arg: &ArgOrMember) -> CArg {
     let name = CString::new(arg.name.clone()).unwrap().into_raw();
     let type_name = CString::new(arg.type_name.clone()).unwrap().into_raw();
     CArg {
+        is_arg: arg.is_arg,
         name,
         location: arg.location,
         type_name,
@@ -579,8 +590,8 @@ pub fn convert_arg(arg: &Arg) -> CArg {
 fn loop_entries<R: Reader, W: Write>(
     unit: gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<HashMap<String, Vec<Arg>>> {
-    let mut fname2args: HashMap<String, Vec<Arg>> = HashMap::new();
+) -> Result<HashMap<String, Vec<ArgOrMember>>> {
+    let mut fname2args: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
     let mut cur_funcname = "".to_string();
     let mut cur_struct_name = "".to_string();
 
@@ -592,6 +603,10 @@ fn loop_entries<R: Reader, W: Write>(
         let mut argoffset = 0;
         let mut bytesize = 0;
         let mut typename = "".to_string();
+
+        let mut member_name = "".to_string();
+        let mut member_typename = "".to_string();
+        let mut member_location_offset = 0;
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
             match attr.name() {
@@ -603,17 +618,28 @@ fn loop_entries<R: Reader, W: Write>(
                         gimli::DW_TAG_formal_parameter => {
                             argname = get_name::<R, W>(&attr, dwarf);
                         }
+                        gimli::DW_TAG_structure_type => {
+                            cur_struct_name = get_name::<R, W>(&attr, dwarf);
+                        }
+                        gimli::DW_TAG_member => {
+                            member_name = get_name::<R, W>(&attr, dwarf);
+                        }
                         _ => {}
                     }
                 }
                 gimli::DW_AT_location => {
                     argoffset = get_arg_loc::<R, W>(&attr, &unit);
+                    member_location_offset = get_arg_loc::<R, W>(&attr, &unit);
                 }
                 gimli::DW_AT_type => {
                     match abbrev.unwrap().tag()  {
                         gimli::DW_TAG_formal_parameter => {
                             bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
                             typename = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
+                        }
+                        gimli::DW_TAG_member => {
+                            bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
+                            member_typename = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
                         }
                         _ => {}
                     }
@@ -628,8 +654,26 @@ fn loop_entries<R: Reader, W: Write>(
                     fname2args.insert(cur_funcname.clone(), vec![]);
                 }
                 gimli::DW_TAG_formal_parameter => {
-                    let arg = Arg{name: argname, location: argoffset, bytes_cnt: bytesize, type_name: typename};
+                    let arg = ArgOrMember {is_arg: true,
+                        name: argname,
+                        location: argoffset,
+                        bytes_cnt: bytesize,
+                        type_name: typename
+                    };
                     fname2args.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
+                }
+                gimli::DW_TAG_structure_type => {
+                    fname2args.insert(cur_struct_name.clone(), vec![]);
+                }
+                gimli::DW_TAG_member => {
+                    let member = ArgOrMember{
+                        is_arg: false,
+                        name: member_name,
+                        type_name: member_typename,
+                        location: member_location_offset,
+                        bytes_cnt: bytesize,
+                    };
+                    fname2args.get_mut(&*cur_struct_name.clone()).unwrap().push(member.clone());
                 }
                 _ => {}
             }
@@ -748,7 +792,11 @@ fn get_type_name_from_die<R: Reader, W: Write>(
         }
         gimli::DW_TAG_pointer_type => {
             let base = die.attr(gimli::DW_AT_type);
-            return Ok("Ptr[".to_string() + &get_arg_type_name::<R, W>(&base.unwrap().unwrap(), unit, dwarf) + "]")
+            let base = &base.unwrap();
+            if base.is_none() { // If void *, this becomes true
+                return Ok("".to_string());
+            }
+            return Ok("Ptr[".to_string() + &get_arg_type_name::<R, W>(&base.clone().unwrap(), unit, dwarf) + "]")
         }
         gimli::DW_TAG_structure_type => {
             let type_name = die.attr(gimli::DW_AT_name)?;
