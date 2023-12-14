@@ -591,7 +591,7 @@ fn loop_entries<R: Reader, W: Write>(
     unit: gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
 ) -> Result<HashMap<String, Vec<ArgOrMember>>> {
-    let mut fname2args: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
+    let mut func_or_struct_name_2_args_or_members: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
     let mut cur_funcname = "".to_string();
     let mut cur_struct_name = "".to_string();
 
@@ -599,47 +599,25 @@ fn loop_entries<R: Reader, W: Write>(
     while !entries.is_empty() {
         let abbrev = entries.read_abbreviation()?;
 
-        let mut argname = "".to_string();
-        let mut argoffset = 0;
+        let mut name = "".to_string();
+        let mut offset = 0;
         let mut bytesize = 0;
-        let mut typename = "".to_string();
+        let mut type_name = "".to_string();
 
-        let mut member_name = "".to_string();
-        let mut member_typename = "".to_string();
-        let mut member_location_offset = 0;
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
             match attr.name() {
                 gimli::DW_AT_name => {
-                    match abbrev.unwrap().tag()  {
-                        gimli::DW_TAG_subprogram => {
-                            cur_funcname = get_name::<R, W>(&attr, dwarf);
-                        }
-                        gimli::DW_TAG_formal_parameter => {
-                            argname = get_name::<R, W>(&attr, dwarf);
-                        }
-                        gimli::DW_TAG_structure_type => {
-                            cur_struct_name = get_name::<R, W>(&attr, dwarf);
-                        }
-                        gimli::DW_TAG_member => {
-                            member_name = get_name::<R, W>(&attr, dwarf);
-                        }
-                        _ => {}
-                    }
+                    name = get_name::<R, W>(&attr, dwarf);
                 }
                 gimli::DW_AT_location => {
-                    argoffset = get_arg_loc::<R, W>(&attr, &unit);
-                    member_location_offset = get_arg_loc::<R, W>(&attr, &unit);
+                    offset = get_arg_loc::<R, W>(&attr, &unit);
                 }
                 gimli::DW_AT_type => {
                     match abbrev.unwrap().tag()  {
-                        gimli::DW_TAG_formal_parameter => {
+                        gimli::DW_TAG_formal_parameter | gimli::DW_TAG_member => {
                             bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
-                            typename = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
-                        }
-                        gimli::DW_TAG_member => {
-                            bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
-                            member_typename = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
+                            type_name = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
                         }
                         _ => {}
                     }
@@ -651,35 +629,37 @@ fn loop_entries<R: Reader, W: Write>(
         if let Some(rev_val) = abbrev {
             match rev_val.tag() {
                 gimli::DW_TAG_subprogram => {
-                    fname2args.insert(cur_funcname.clone(), vec![]);
+                    func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
+                    cur_funcname = name;
                 }
                 gimli::DW_TAG_formal_parameter => {
                     let arg = ArgOrMember {is_arg: true,
-                        name: argname,
-                        location: argoffset,
+                        name,
+                        location: offset,
                         bytes_cnt: bytesize,
-                        type_name: typename
+                        type_name
                     };
-                    fname2args.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
+                    func_or_struct_name_2_args_or_members.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
                 }
                 gimli::DW_TAG_structure_type => {
-                    fname2args.insert(cur_struct_name.clone(), vec![]);
+                    func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
+                    cur_struct_name = name;
                 }
                 gimli::DW_TAG_member => {
                     let member = ArgOrMember{
                         is_arg: false,
-                        name: member_name,
-                        type_name: member_typename,
-                        location: member_location_offset,
+                        name,
+                        type_name,
+                        location: offset,
                         bytes_cnt: bytesize,
                     };
-                    fname2args.get_mut(&*cur_struct_name.clone()).unwrap().push(member.clone());
+                    func_or_struct_name_2_args_or_members.get_mut(&*cur_struct_name.clone()).unwrap().push(member.clone());
                 }
                 _ => {}
             }
         }
     }
-    Ok(fname2args)
+    Ok(func_or_struct_name_2_args_or_members)
 }
 
 fn get_arg_loc<R: Reader, W: Write> (
