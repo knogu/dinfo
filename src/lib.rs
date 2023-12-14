@@ -536,7 +536,7 @@ fn dump_unit<R: Reader, W: Write>(
         }
     };
 
-    let entries_result = dump_entries::<R, W>(unit, dwarf);
+    let entries_result = loop_entries::<R, W>(unit, dwarf);
     if let Err(err) = entries_result {
         writeln_error(w, dwarf, err, "Failed to dump entries")?;
     }
@@ -576,18 +576,17 @@ pub fn convert_arg(arg: &Arg) -> CArg {
     }
 }
 
-fn dump_entries<R: Reader, W: Write>(
+fn loop_entries<R: Reader, W: Write>(
     unit: gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
 ) -> Result<HashMap<String, Vec<Arg>>> {
     let mut fname2args: HashMap<String, Vec<Arg>> = HashMap::new();
     let mut cur_funcname = "".to_string();
+    let mut cur_struct_name = "".to_string();
 
     let mut entries = unit.entries_raw(None)?;
     while !entries.is_empty() {
         let abbrev = entries.read_abbreviation()?;
-
-        let mut funcname = "".to_string();
 
         let mut argname = "".to_string();
         let mut argoffset = 0;
@@ -597,18 +596,26 @@ fn dump_entries<R: Reader, W: Write>(
             let attr = entries.read_attribute(*spec)?;
             match attr.name() {
                 gimli::DW_AT_name => {
-                    funcname = get_func_name::<R, W>(&attr, dwarf);
-                    argname = get_arg_name::<R, W>(&attr, dwarf);
+                    match abbrev.unwrap().tag()  {
+                        gimli::DW_TAG_subprogram => {
+                            cur_funcname = get_name::<R, W>(&attr, dwarf);
+                        }
+                        gimli::DW_TAG_formal_parameter => {
+                            argname = get_name::<R, W>(&attr, dwarf);
+                        }
+                        _ => {}
+                    }
                 }
                 gimli::DW_AT_location => {
                     argoffset = get_arg_loc::<R, W>(&attr, &unit);
                 }
                 gimli::DW_AT_type => {
-                    if let Some(rev_val) = abbrev {
-                        if let gimli::DW_TAG_formal_parameter = rev_val.tag() {
+                    match abbrev.unwrap().tag()  {
+                        gimli::DW_TAG_formal_parameter => {
                             bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
                             typename = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
                         }
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -618,7 +625,6 @@ fn dump_entries<R: Reader, W: Write>(
         if let Some(rev_val) = abbrev {
             match rev_val.tag() {
                 gimli::DW_TAG_subprogram => {
-                    cur_funcname = funcname;
                     fname2args.insert(cur_funcname.clone(), vec![]);
                 }
                 gimli::DW_TAG_formal_parameter => {
@@ -630,19 +636,6 @@ fn dump_entries<R: Reader, W: Write>(
         }
     }
     Ok(fname2args)
-}
-
-fn get_func_name<R: Reader, W: Write> (
-    attr: &gimli::Attribute<R>,
-    dwarf: &gimli::Dwarf<R>,
-) -> String {
-    let value = attr.value();
-    if let gimli::AttributeValue::DebugStrRef(offset) = value {
-        if let Ok(s) = dwarf.debug_str.get_str(offset) {
-            return s.to_string_lossy().unwrap().parse().unwrap();
-        }
-    }
-    return "".to_string();
 }
 
 fn get_arg_loc<R: Reader, W: Write> (
@@ -686,7 +679,7 @@ fn get_frame_offset<R: Reader, W: Write>(
 }
 
 // from dump_attr_value?
-fn get_arg_name<R: Reader, W: Write> (
+fn get_name<R: Reader, W: Write> (
     attr: &gimli::Attribute<R>,
     dwarf: &gimli::Dwarf<R>,
 ) -> String {
@@ -703,7 +696,7 @@ fn get_arg_name<R: Reader, W: Write> (
             }
         }
         _ => {
-            "arg name not caught".to_string()
+            "name not caught".to_string()
         }
     }
 }
@@ -724,6 +717,7 @@ fn get_arg_byte_size<R: Reader, W: Write>(
     0
 }
 
+// これargじゃなくても、attributeにDW_AT_typeを持つやつなら使えそう
 fn get_arg_type_name<R: Reader, W: Write>(
     attr: &gimli::Attribute<R>,
     unit: &gimli::Unit<R>,
