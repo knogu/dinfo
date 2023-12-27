@@ -610,7 +610,7 @@ fn loop_entries<R: Reader, W: Write>(
                 gimli::DW_AT_name => {
                     name = get_name::<R, W>(&attr, dwarf);
                 }
-                gimli::DW_AT_location => {
+                gimli::DW_AT_location | gimli::DW_AT_data_member_location => {
                     offset = get_arg_loc::<R, W>(&attr, &unit);
                 }
                 gimli::DW_AT_type => {
@@ -666,10 +666,15 @@ fn get_arg_loc<R: Reader, W: Write> (
     attr: &gimli::Attribute<R>,
     unit: &gimli::Unit<R>,
 ) -> i64 {
-    if let gimli::AttributeValue::Exprloc(ref data) = attr.value() {
-        get_frame_offset_by_data::<R, W>(unit.encoding(), data).unwrap();
+    return match attr.value() {
+        gimli::AttributeValue::Exprloc(ref data) => {
+            get_frame_offset_by_data::<R, W>(unit.encoding(), data).unwrap()
+        }
+        gimli::AttributeValue::Udata(data) => {
+            data as i64
+        }
+        _ => { 0 }
     }
-    0
 }
 
 // from dump_exprloc
