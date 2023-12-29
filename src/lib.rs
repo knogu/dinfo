@@ -1,5 +1,6 @@
 // Allow clippy lints when building without clippy.
 #![allow(unknown_lints)]
+extern crate libc;
 
 use fallible_iterator::FallibleIterator;
 use gimli::{Abbreviation, Attribute, AttributeValue, DebuggingInformationEntry, Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
