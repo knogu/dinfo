@@ -1,11 +1,12 @@
 #include "test.h"
 #include <stdio.h>
 
-void dump(void* map, char *name) {
-    size_t len = get_arg_count(map, name);
+void dump_func(void* map, uintptr_t func_addr) {
+    printf("funcname: %s\n", get_funcname(map, func_addr));
+    size_t len = get_arg_cnt_from_func_addr(map, func_addr);
 
     for (int i = 0; i < len; ++i) {
-        Arg arg = get_ith_arg(map, name, i);
+        Arg arg = get_ith_arg_from_func_addr(map, func_addr, i);
         if (arg.is_arg) {
             printf("=== %d th arg ===\n", i+1);
         } else {
@@ -21,11 +22,11 @@ void dump(void* map, char *name) {
 }
 
 int main() {
-    // Rustのcreate_map関数を呼び出す
-    void* map = get_func2args("/Users/jp31281/call-tracer/dinfo/samples/test");
+    void* map = get_addr2func("/Users/jp31281/call-tracer/dinfo/samples/test");
+    void* ptr = 0x00011a9;
 
-    dump(map, "callee");
-    dump(map, "Person");
+    dump_func(map, ptr);
+//    dump_func(map, "Person");
 
     // Rustのfree_map関数を呼び出す
 //    free_map(map);

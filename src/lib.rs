@@ -310,11 +310,33 @@ fn print_usage(opts: &getopts::Options) -> ! {
 
 // Cから呼ぶ
 #[no_mangle]
-pub extern "C" fn get_func2args(file_path: *const c_char) -> *mut HashMap<String, Vec<ArgOrMember>> {
+pub extern "C" fn get_func2args(file_path: *const c_char) -> *mut HashMap<usize, Func> {
     let file_path = unsafe { CStr::from_ptr(file_path).to_str().unwrap().to_string() };
     let map = get_func_info(&file_path).unwrap();
     let m = Box::new(map);
     Box::into_raw(m)
+}
+
+#[no_mangle]
+pub extern "C" fn get_addr2func(file_path: *const c_char) -> *mut HashMap<usize, Func> {
+    let file_path = unsafe { CStr::from_ptr(file_path).to_str().unwrap().to_string() };
+    let map = get_func_info(&file_path).unwrap();
+    let m = Box::new(map);
+    Box::into_raw(m)
+}
+
+#[no_mangle]
+pub extern "C" fn get_funcname(m: *mut HashMap<usize, Func>, addr: usize) -> *mut c_char {
+    let m = unsafe { &*m };
+    let cs = CString::new(m.get(&addr).unwrap().clone().name).unwrap(); // C文字列に変換
+    cs.into_raw() // ポインタに変換
+}
+
+#[no_mangle]
+pub extern "C" fn get_arg_cnt_from_func_addr(m: *mut HashMap<usize, Func>, addr: usize) -> usize {
+    let m = unsafe { &*m };
+    let func = m.get(&addr);
+    func.unwrap().args.len()
 }
 
 #[no_mangle]
@@ -325,6 +347,14 @@ pub extern "C" fn get_arg_count(m: *mut HashMap<String, Vec<ArgOrMember>>, funcn
         Some(v) => v.len(),
         None => 0,
     }
+}
+
+#[no_mangle]
+pub extern "C" fn get_ith_arg_from_func_addr(m: *mut HashMap<usize, Func>, addr: usize, i: usize) -> CArg {
+    let m = unsafe { &*m };
+    let func = m.get(&addr).unwrap();
+    let arg = func.args.get(i).unwrap();
+    return convert_arg(&arg);
 }
 
 #[no_mangle]
@@ -345,7 +375,7 @@ pub extern "C" fn get_ith_arg(m: *mut HashMap<String, Vec<ArgOrMember>>, key: *c
 }
 
 // 構造体の初期化でこれやって、構造体のメンバとして関数名→Func, のmap持ちたい
-fn get_func_info(file_path: &String) -> Result<HashMap<String, Vec<ArgOrMember>>> {
+fn get_func_info(file_path: &String) -> Result<HashMap<usize, Func>> {
     let file = match fs::File::open(&file_path) {
         Ok(file) => file,
         Err(err) => {
@@ -415,7 +445,7 @@ fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
     })
 }
 
-fn dump_file<Endian>(file: &object::File, endian: Endian) -> Result<HashMap<String, Vec<ArgOrMember>>>
+fn dump_file<Endian>(file: &object::File, endian: Endian) -> Result<HashMap<usize, Func>>
     where
         Endian: gimli::Endianity + Send + Sync,
 {
@@ -446,11 +476,11 @@ fn dump_dwp<R: Reader, W: Write + Send>(
     w: &mut W,
     dwp: &gimli::DwarfPackage<R>,
     dwo_parent: &gimli::Dwarf<R>,
-) -> Result<HashMap<String, Vec<ArgOrMember>>>
+) -> Result<HashMap<usize, Func>>
     where
         R::Endian: Send + Sync,
 {
-    let mut ret: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
+    let mut ret: HashMap<usize, Func> = HashMap::new();
     if dwp.cu_index.unit_count() != 0 {
         for i in 1..=dwp.cu_index.unit_count() {
             let res = dump_dwp_sections(
@@ -487,7 +517,7 @@ fn dump_dwp_sections<R: Reader, W: Write + Send>(
     dwp: &gimli::DwarfPackage<R>,
     dwo_parent: &gimli::Dwarf<R>,
     sections: gimli::UnitIndexSectionIterator<R>,
-) -> Result<HashMap<String, Vec<ArgOrMember>>>
+) ->Result<HashMap<usize, Func>>
     where
         R::Endian: Send + Sync,
 {
@@ -498,7 +528,7 @@ fn dump_dwp_sections<R: Reader, W: Write + Send>(
 fn dump_info<R: Reader, W: Write + Send>(
     w: &mut W,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<HashMap<String, Vec<ArgOrMember>>>
+) -> Result<HashMap<usize, Func>>
     where
         R::Endian: Send + Sync,
 {
@@ -514,7 +544,7 @@ fn dump_info<R: Reader, W: Write + Send>(
             return Ok(HashMap::new());
         }
     };
-    let mut res: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
+    let mut res: HashMap<usize, Func> = HashMap::new();
     for unit in units {
         for (fname, args) in dump_unit(w, unit, dwarf)? {
             res.insert(fname, args);
@@ -527,7 +557,7 @@ fn dump_unit<R: Reader, W: Write>(
     w: &mut W,
     header: UnitHeader<R>,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<HashMap<String, Vec<ArgOrMember>>> {
+) -> Result<HashMap<usize, Func>> {
     let unit = match dwarf.unit(header) {
         Ok(unit) => unit,
         Err(err) => {
@@ -538,7 +568,7 @@ fn dump_unit<R: Reader, W: Write>(
 
     let entries_result = loop_entries::<R, W>(unit, dwarf);
     if let Err(err) = entries_result {
-        writeln_error(w, dwarf, err, "Failed to dump entries")?;
+        writeln_error(w, dwarf, err, "Failed to dump_func entries")?;
     }
     return entries_result
 }
@@ -591,9 +621,10 @@ pub fn convert_arg(arg: &ArgOrMember) -> CArg {
 fn loop_entries<R: Reader, W: Write>(
     unit: gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<HashMap<String, Vec<ArgOrMember>>> {
+) -> Result<HashMap<usize, Func>> {
     let mut func_addr2name: HashMap<usize, String> = HashMap::new();
     let mut func_or_struct_name_2_args_or_members: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
+    let mut addr2func: HashMap<usize, Func> = HashMap::new();
     let mut cur_func_addr: usize = 0;
     let mut cur_funcname = "".to_string();
     let mut cur_struct_name = "".to_string();
@@ -643,6 +674,8 @@ fn loop_entries<R: Reader, W: Write>(
                     func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
                     cur_funcname = name.clone();
                     func_addr2name.insert(cur_func_addr, name.clone());
+                    let func = Func{name: cur_funcname.clone(), args: vec![], addr: cur_func_addr};
+                    addr2func.insert(cur_func_addr, func);
                 }
                 gimli::DW_TAG_formal_parameter => {
                     let arg = ArgOrMember {is_arg: true,
@@ -652,6 +685,7 @@ fn loop_entries<R: Reader, W: Write>(
                         type_name
                     };
                     func_or_struct_name_2_args_or_members.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
+                    addr2func.get_mut(&cur_func_addr).unwrap().args.push(arg.clone());
                 }
                 gimli::DW_TAG_structure_type => {
                     func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
@@ -671,7 +705,7 @@ fn loop_entries<R: Reader, W: Write>(
             }
         }
     }
-    Ok(func_or_struct_name_2_args_or_members)
+    Ok(addr2func)
 }
 
 fn get_low_pc<R: Reader, W: Write> (

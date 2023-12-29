@@ -554,7 +554,7 @@ fn main() {
         let ret = dump_file(&file, endian, &flags);
         match ret {
             Ok(_) => (),
-            Err(err) => eprintln!("Failed to dump '{}': {}", file_path, err,),
+            Err(err) => eprintln!("Failed to dump_func '{}': {}", file_path, err,),
         }
     }
 }
@@ -1282,7 +1282,7 @@ fn dump_unit<R: Reader, W: Write>(
 
     let entries_result = dump_entries(w, unit, dwarf, flags);
     if let Err(err) = entries_result {
-        writeln_error(w, dwarf, err, "Failed to dump entries")?;
+        writeln_error(w, dwarf, err, "Failed to dump_func entries")?;
     }
     Ok(())
 }
@@ -1405,7 +1405,7 @@ fn dump_entries<R: Reader, W: Write>(
             } else {
                 match dump_attr_value(w, &attr, &unit, dwarf) {
                     Ok(_) => (),
-                    Err(err) => writeln_error(w, dwarf, err, "Failed to dump attribute value")?,
+                    Err(err) => writeln_error(w, dwarf, err, "Failed to dump_func attribute value")?,
                 };
             }
         }
@@ -2311,7 +2311,7 @@ fn dump_line<R: Reader, W: Write>(w: &mut W, dwarf: &gimli::Dwarf<R>) -> Result<
         match dump_line_program(w, &unit, dwarf) {
             Ok(_) => (),
             Err(Error::IoError) => return Err(Error::IoError),
-            Err(err) => writeln_error(w, dwarf, err, "Failed to dump line program")?,
+            Err(err) => writeln_error(w, dwarf, err, "Failed to dump_func line program")?,
         }
     }
     Ok(())
