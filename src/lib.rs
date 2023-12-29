@@ -2,7 +2,7 @@
 #![allow(unknown_lints)]
 
 use fallible_iterator::FallibleIterator;
-use gimli::{Abbreviation, Attribute, DebuggingInformationEntry, Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
+use gimli::{Abbreviation, Attribute, AttributeValue, DebuggingInformationEntry, Section, UnitHeader, UnitOffset, UnitSectionOffset, UnitType, UnwindSection};
 use object::{File, Object, ObjectSection, ObjectSymbol};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -547,6 +547,7 @@ fn dump_unit<R: Reader, W: Write>(
 struct Func {
     name: String,
     args: Vec<ArgOrMember>,
+    addr: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -591,7 +592,9 @@ fn loop_entries<R: Reader, W: Write>(
     unit: gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
 ) -> Result<HashMap<String, Vec<ArgOrMember>>> {
+    let mut func_addr2name: HashMap<usize, String> = HashMap::new();
     let mut func_or_struct_name_2_args_or_members: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
+    let mut cur_func_addr: usize = 0;
     let mut cur_funcname = "".to_string();
     let mut cur_struct_name = "".to_string();
 
@@ -622,6 +625,14 @@ fn loop_entries<R: Reader, W: Write>(
                         _ => {}
                     }
                 }
+                gimli::DW_AT_low_pc => {
+                    match attr.value() {
+                        AttributeValue::Addr(address) => {
+                            cur_func_addr = address as usize;
+                        }
+                        _ => {println!("addr err");}
+                    }
+                }
                 _ => {}
             }
         }
@@ -630,7 +641,8 @@ fn loop_entries<R: Reader, W: Write>(
             match rev_val.tag() {
                 gimli::DW_TAG_subprogram => {
                     func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
-                    cur_funcname = name;
+                    cur_funcname = name.clone();
+                    func_addr2name.insert(cur_func_addr, name.clone());
                 }
                 gimli::DW_TAG_formal_parameter => {
                     let arg = ArgOrMember {is_arg: true,
@@ -660,6 +672,26 @@ fn loop_entries<R: Reader, W: Write>(
         }
     }
     Ok(func_or_struct_name_2_args_or_members)
+}
+
+fn get_low_pc<R: Reader, W: Write> (
+    attr: &gimli::Attribute<R>,
+    unit: &gimli::Unit<R>,
+) -> i64 {
+    // match attr.name(({
+    //     gimli::DW_AT_high_pc => {
+    //         writeln!(w, "<offset-from-lowpc>{}", data)?;
+    //     }
+    // }
+    return match attr.value() {
+        gimli::AttributeValue::Exprloc(ref data) => {
+            get_frame_offset_by_data::<R, W>(unit.encoding(), data).unwrap()
+        }
+        gimli::AttributeValue::Udata(data) => {
+            data as i64
+        }
+        _ => { 0 }
+    }
 }
 
 fn get_arg_loc<R: Reader, W: Write> (

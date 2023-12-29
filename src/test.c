@@ -22,7 +22,7 @@ void dump(void* map, char *name) {
 
 int main() {
     // Rustのcreate_map関数を呼び出す
-    void* map = get_func2args("/Users/jp31281/call-tracer/dinfo/samples/hello");
+    void* map = get_func2args("/Users/jp31281/call-tracer/dinfo/samples/test");
 
     dump(map, "callee");
     dump(map, "Person");
