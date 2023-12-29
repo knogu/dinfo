@@ -16,8 +16,11 @@ void dump_func(void* map, uintptr_t func_addr) {
         printf("name: %s\n", arg.name);
         printf("bytes_cnt: %llu\n", arg.bytes_cnt);
         printf("location: %lld\n", arg.location);
-        printf("typ: %s", arg.typ.value);
-        printf("\n\n");
+        printf("typ: %s\n", arg.typ.name);
+        if (arg.typ.pointed) {
+            printf("pointed: %s\n", arg.typ.pointed->name);
+        }
+        printf("\n");
     }
 }
 

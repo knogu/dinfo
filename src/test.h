@@ -3,8 +3,8 @@
 #include <stdbool.h>
 
 typedef struct Type {
-    char* value;
-    struct Type* next;
+    char* name;
+    struct Type* pointed;
 } Type;
 
 typedef struct {

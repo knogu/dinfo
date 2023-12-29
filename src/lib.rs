@@ -618,7 +618,7 @@ fn loop_entries<R: Reader, W: Write>(
         let mut name = "".to_string();
         let mut offset = 0;
         let mut bytesize = 0;
-        let mut typ: Type = Type { value: string2charc("dummy".to_string()), next: null_mut() };
+        let mut typ: Type = Type { name: string2charc("dummy".to_string()), pointed: null_mut() };
 
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
@@ -813,8 +813,8 @@ fn get_arg_type<R: Reader, W: Write>(
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct Type {
-    value: *mut c_char,
-    next: *mut Type,
+    name: *mut c_char,
+    pointed: *mut Type,
 }
 
 use std::ptr;
@@ -822,7 +822,11 @@ use std::ptr::null_mut;
 
 impl Type {
     fn new(value: *mut c_char) -> Type {
-        Type { value, next: ptr::null_mut() }
+        Type { name: value, pointed: ptr::null_mut() }
+    }
+
+    fn new_with_ptr(name: *mut c_char, pointed: *mut Type) -> Type {
+        Type { name, pointed }
     }
 }
 
@@ -847,7 +851,10 @@ fn get_type_name_from_die<R: Reader, W: Write>(
                 return Ok(Type::new(string2charc("".to_string())));
             }
             let name = "Ptr".to_string();
-            return Ok(Type::new(string2charc(name)));
+            let pointed = Box::new(get_arg_type::<R, W>(&base.clone().unwrap(), unit, dwarf));
+            let pointed_ptr = Box::into_raw(pointed);
+            let typ = Type::new_with_ptr(string2charc(name), pointed_ptr);
+            return Ok(typ);
         }
         gimli::DW_TAG_structure_type => {
             let type_name = die.attr(gimli::DW_AT_name)?;
