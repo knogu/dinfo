@@ -2,12 +2,16 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-// Argの定義。フィールドはRustのArgと一致させる必要があります。
+typedef struct Type {
+    char* value;
+    struct Type* next;
+} Type;
+
 typedef struct {
     bool is_arg;
     char* name;
     int64_t location;
-    char* type_name;
+    Type typ;
     uint64_t bytes_cnt;
 } Arg;
 

@@ -357,23 +357,6 @@ pub extern "C" fn get_ith_arg_from_func_addr(m: *mut HashMap<usize, Func>, addr:
     return convert_arg(&arg);
 }
 
-#[no_mangle]
-pub extern "C" fn get_ith_arg(m: *mut HashMap<String, Vec<ArgOrMember>>, key: *const c_char, i: usize) -> CArg {
-    let m = unsafe { &*m };
-    let key = unsafe { CStr::from_ptr(key).to_str().unwrap().to_string() };
-    match m.get(&key) {
-        Some(v) => {
-            println!("{:?}", (*v.get(i).unwrap()).clone());
-            let arg = (*v.get(i).unwrap()).clone();
-            return convert_arg(&arg);
-        },
-        None => {
-            let arg = ArgOrMember {is_arg: true, name: "dummy".to_string(), location: 0, type_name: "dummy".to_string(), bytes_cnt: 0};
-            return convert_arg(&arg);
-        },
-    }
-}
-
 // 構造体の初期化でこれやって、構造体のメンバとして関数名→Func, のmap持ちたい
 fn get_func_info(file_path: &String) -> Result<HashMap<usize, Func>> {
     let file = match fs::File::open(&file_path) {
@@ -590,7 +573,7 @@ struct Struct {
 pub struct ArgOrMember { // argument or struct's member
     pub is_arg: bool,
     pub name: String,
-    pub type_name: String,
+    pub typ: Type,
     // For struct's member, offset in struct (DW_AT_data_member_location).
     // For argument, offset from rbp
     pub location: i64,
@@ -602,18 +585,17 @@ pub struct CArg {
     pub is_arg: bool,
     pub name: *const c_char,
     pub location: i64,
-    pub type_name: *const c_char,
+    pub typ: Type,
     pub bytes_cnt: u64,
 }
 
 pub fn convert_arg(arg: &ArgOrMember) -> CArg {
     let name = CString::new(arg.name.clone()).unwrap().into_raw();
-    let type_name = CString::new(arg.type_name.clone()).unwrap().into_raw();
     CArg {
         is_arg: arg.is_arg,
         name,
         location: arg.location,
-        type_name,
+        typ: arg.clone().typ,
         bytes_cnt: arg.bytes_cnt,
     }
 }
@@ -636,7 +618,7 @@ fn loop_entries<R: Reader, W: Write>(
         let mut name = "".to_string();
         let mut offset = 0;
         let mut bytesize = 0;
-        let mut type_name = "".to_string();
+        let mut typ: Type = Type { value: string2charc("dummy".to_string()), next: null_mut() };
 
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
@@ -651,7 +633,7 @@ fn loop_entries<R: Reader, W: Write>(
                     match abbrev.unwrap().tag()  {
                         gimli::DW_TAG_formal_parameter | gimli::DW_TAG_member => {
                             bytesize = get_arg_byte_size::<R, W>(&attr, &unit);
-                            type_name = get_arg_type_name::<R, W>(&attr, &unit, dwarf);
+                            typ = get_arg_type::<R, W>(&attr, &unit, dwarf);
                         }
                         _ => {}
                     }
@@ -682,7 +664,7 @@ fn loop_entries<R: Reader, W: Write>(
                         name,
                         location: offset,
                         bytes_cnt: bytesize,
-                        type_name
+                        typ
                     };
                     func_or_struct_name_2_args_or_members.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
                     addr2func.get_mut(&cur_func_addr).unwrap().args.push(arg.clone());
@@ -695,7 +677,7 @@ fn loop_entries<R: Reader, W: Write>(
                     let member = ArgOrMember{
                         is_arg: false,
                         name,
-                        type_name,
+                        typ,
                         location: offset,
                         bytes_cnt: bytesize,
                     };
@@ -813,11 +795,11 @@ fn get_arg_byte_size<R: Reader, W: Write>(
 }
 
 // これargじゃなくても、attributeにDW_AT_typeを持つやつなら使えそう
-fn get_arg_type_name<R: Reader, W: Write>(
+fn get_arg_type<R: Reader, W: Write>(
     attr: &gimli::Attribute<R>,
     unit: &gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
-) -> String {
+) -> Type {
     let value = attr.value();
     if let gimli::AttributeValue::UnitRef(offset) = value {
         if let UnitSectionOffset::DebugInfoOffset(_) = offset.to_unit_section_offset(unit) {
@@ -825,39 +807,62 @@ fn get_arg_type_name<R: Reader, W: Write>(
             return get_type_name_from_die::<R, W>(die, unit, dwarf).unwrap();
         }
     }
-    return "".to_string();
+    return Type::new(string2charc("type err".to_string()));
+}
+
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct Type {
+    value: *mut c_char,
+    next: *mut Type,
+}
+
+use std::ptr;
+use std::ptr::null_mut;
+
+impl Type {
+    fn new(value: *mut c_char) -> Type {
+        Type { value, next: ptr::null_mut() }
+    }
 }
 
 fn get_type_name_from_die<R: Reader, W: Write>(
     die: DebuggingInformationEntry<R>,
     unit: &gimli::Unit<R>,
     dwarf: &gimli::Dwarf<R>,
-) -> Result<String> {
+) -> Result<Type> {
     match die.tag() {
         gimli::DW_TAG_base_type => {
             let type_name = die.attr(gimli::DW_AT_name)?;
             if let Some(typename) = type_name {
-                return Ok(get_type_name::<R, W>(&typename, dwarf))
+                let name = get_type_name::<R, W>(&typename, dwarf);
+                return Ok(Type::new(string2charc(name)));
             }
-            return Ok("base type name is none".to_string())
+            return Err(Error::IoError);
         }
         gimli::DW_TAG_pointer_type => {
             let base = die.attr(gimli::DW_AT_type);
             let base = &base.unwrap();
             if base.is_none() { // If void *, this becomes true
-                return Ok("".to_string());
+                return Ok(Type::new(string2charc("".to_string())));
             }
-            return Ok("Ptr[".to_string() + &get_arg_type_name::<R, W>(&base.clone().unwrap(), unit, dwarf) + "]")
+            let name = "Ptr".to_string();
+            return Ok(Type::new(string2charc(name)));
         }
         gimli::DW_TAG_structure_type => {
             let type_name = die.attr(gimli::DW_AT_name)?;
             if let Some(typename) = type_name {
-                return Ok(get_type_name::<R, W>(&typename, dwarf))
+                let name = get_type_name::<R, W>(&typename, dwarf);
+                return Ok(Type::new(string2charc(name)));
             }
-            return Ok("struct type name is none".to_string())
+            return Ok(Type::new(string2charc("".to_string())));
         }
-        _ => { return Ok("type not caught".to_string()) }
+        _ => { return Ok(Type::new(string2charc("type not caught".to_string()))); }
     }
+}
+
+fn string2charc(string: String) -> *mut c_char {
+    return CString::new(string).unwrap().into_raw();
 }
 
 fn get_type_name<R: Reader, W: Write>(

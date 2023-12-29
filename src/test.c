@@ -5,7 +5,7 @@ void dump_func(void* map, uintptr_t func_addr) {
     printf("funcname: %s\n", get_funcname(map, func_addr));
     size_t len = get_arg_cnt_from_func_addr(map, func_addr);
 
-    for (int i = 0; i < len; ++i) {
+    for (int i = 0; i < len; i++) {
         Arg arg = get_ith_arg_from_func_addr(map, func_addr, i);
         if (arg.is_arg) {
             printf("=== %d th arg ===\n", i+1);
@@ -16,8 +16,8 @@ void dump_func(void* map, uintptr_t func_addr) {
         printf("name: %s\n", arg.name);
         printf("bytes_cnt: %llu\n", arg.bytes_cnt);
         printf("location: %lld\n", arg.location);
-        printf("type_name: %s\n", arg.type_name);
-        printf("\n");
+        printf("typ: %s", arg.typ.value);
+        printf("\n\n");
     }
 }
 
@@ -26,10 +26,6 @@ int main() {
     void* ptr = 0x00011a9;
 
     dump_func(map, ptr);
-//    dump_func(map, "Person");
-
-    // Rustのfree_map関数を呼び出す
-//    free_map(map);
 
     return 0;
 }
