@@ -343,6 +343,13 @@ pub extern "C" fn get_ith_arg_from_func_addr(m: *mut HashMap<usize, Func>, addr:
     return convert_arg(&arg);
 }
 
+#[no_mangle]
+pub extern "C" fn get_member_from_offset(offset2mem: *mut IndexMap<usize, Type>, offset: usize) -> Type {
+    let offset2mem = unsafe { &*offset2mem };
+    let mem = offset2mem.get(&offset).unwrap().clone();
+    return mem;
+}
+
 // 構造体の初期化でこれやって、構造体のメンバとして関数名→Func, のmap持ちたい
 fn get_func_info(file_path: &String) -> Result<HashMap<usize, Func>> {
     let file = match fs::File::open(&file_path) {
@@ -531,7 +538,7 @@ fn dump_unit<R: Reader, W: Write>(
         Ok(unit) => unit,
         Err(err) => {
             writeln_error(w, dwarf, err.into(), "Failed to parse unit root entry")?;
-            return Ok((HashMap::new()));
+            return Ok(HashMap::new());
         }
     };
 
@@ -573,14 +580,28 @@ pub struct Type {
     pointed: *mut Type,
     struct_first_field: *mut Type, // null <-> not a struct
     struct_next_field: *mut Type, // not null <-> a field of a struct
+    offset: i64, // for struct member
+    offset2field: IndexMap<usize, *mut Type>,
 }
+
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct CType {
+    name: *mut c_char,
+    pointed: *mut crate::Type,
+    struct_first_field: *mut crate::Type, // null <-> not a struct
+    struct_next_field: *mut crate::Type, // not null <-> a field of a struct
+    offset: i64, // for struct member
+    offset2field: *mut IndexMap<usize, *mut Type>,
+}
+
 
 #[repr(C)]
 pub struct CArg {
     pub is_arg: bool,
     pub name: *const c_char,
     pub location: i64,
-    pub typ: Type,
+    pub typ: CType,
     pub bytes_cnt: u64,
 }
 
@@ -590,8 +611,20 @@ pub fn convert_arg(arg: &ArgOrMember) -> CArg {
         is_arg: arg.is_arg,
         name,
         location: arg.location,
-        typ: arg.clone().typ,
+        typ: convert_typ(&arg.clone().typ),
         bytes_cnt: arg.bytes_cnt,
+    }
+}
+
+pub fn convert_typ(typ: &Type) -> CType {
+    let m = Box::new(typ.clone().offset2field);
+    CType {
+        name: typ.name,
+        pointed: typ.pointed,
+        struct_first_field: typ.struct_first_field,
+        struct_next_field: typ.struct_next_field,
+        offset: typ.offset,
+        offset2field: Box::into_raw(m),
     }
 }
 
@@ -697,8 +730,10 @@ fn loop_entries<R: Reader, W: Write>(
                     // let typ_p = Box::into_raw(Box::new(typ));
                     let struct_name = name2struct_typ.keys().last().unwrap().clone();
                     unsafe {
+                        typ.offset = offset;
                         let typ_b = Box::new(typ);
                         let typ_p = Box::into_raw(typ_b);
+                        name2struct_typ.get_mut(&struct_name).unwrap().offset2field.insert(offset as usize, typ_p);
                         if name2struct_typ.get(&struct_name).unwrap().struct_first_field.is_null() {
                             name2struct_typ.get_mut(&struct_name).unwrap().struct_first_field = typ_p;
                             cur_last_struct_field = Some(typ_p);
@@ -835,11 +870,11 @@ use indexmap::IndexMap;
 
 impl Type {
     fn new(name: String) -> Type {
-        Type { name: string2charc(name), pointed: ptr::null_mut(), struct_next_field: null_mut(), struct_first_field: null_mut()}
+        Type { name: string2charc(name), pointed: ptr::null_mut(), struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, offset2field: IndexMap::new()}
     }
 
     fn new_with_ptr(name: *mut c_char, pointed: *mut Type) -> Type {
-        Type { name, pointed, struct_next_field: null_mut(), struct_first_field: null_mut()}
+        Type { name, pointed, struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, offset2field: IndexMap::new()}
     }
 }
 

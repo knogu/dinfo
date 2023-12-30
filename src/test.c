@@ -22,8 +22,11 @@ void dump_func(void* map, uintptr_t func_addr) {
         }
         if (arg.typ.struct_first_field) {
             printf("first: %s\n", arg.typ.struct_first_field->name);
+            printf("first offset: %llu\n", arg.typ.offset);
             printf("second: %s\n", arg.typ.struct_first_field->struct_next_field->name);
+            printf("second offset: %llu\n", arg.typ.struct_first_field->struct_next_field->offset);
             printf("third: %s\n", arg.typ.struct_first_field->struct_next_field->struct_next_field->name);
+            printf("third offset: %lld\n", arg.typ.struct_first_field->struct_next_field->struct_next_field->offset);
         }
         printf("\n");
     }
