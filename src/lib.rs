@@ -582,6 +582,7 @@ pub struct Type {
     struct_next_field: *mut Type, // not null <-> a field of a struct
     offset: i64, // for struct member
     offset2field: IndexMap<usize, *mut Type>,
+    field_name: *mut c_char, // for struct member
 }
 
 #[derive(Debug, Clone)]
@@ -593,6 +594,7 @@ pub struct CType {
     struct_next_field: *mut crate::Type, // not null <-> a field of a struct
     offset: i64, // for struct member
     offset2field: *mut IndexMap<usize, *mut Type>,
+    field_name: *mut c_char, // for struct member
 }
 
 
@@ -618,6 +620,7 @@ pub fn convert_arg(arg: &ArgOrMember) -> CArg {
 
 pub fn convert_typ(typ: &Type) -> CType {
     let m = Box::new(typ.clone().offset2field);
+    println!("cchar: {}", c_char_to_string(typ.field_name).unwrap());
     CType {
         name: typ.name,
         pointed: typ.pointed,
@@ -625,6 +628,7 @@ pub fn convert_typ(typ: &Type) -> CType {
         struct_next_field: typ.struct_next_field,
         offset: typ.offset,
         offset2field: Box::into_raw(m),
+        field_name: typ.field_name,
     }
 }
 
@@ -731,6 +735,8 @@ fn loop_entries<R: Reader, W: Write>(
                     let struct_name = name2struct_typ.keys().last().unwrap().clone();
                     unsafe {
                         typ.offset = offset;
+                        // println!("field name: {}", name);
+                        typ.field_name = string2charc(name);
                         let typ_b = Box::new(typ);
                         let typ_p = Box::into_raw(typ_b);
                         name2struct_typ.get_mut(&struct_name).unwrap().offset2field.insert(offset as usize, typ_p);
@@ -870,11 +876,11 @@ use indexmap::IndexMap;
 
 impl Type {
     fn new(name: String) -> Type {
-        Type { name: string2charc(name), pointed: ptr::null_mut(), struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, offset2field: IndexMap::new()}
+        Type { name: string2charc(name), pointed: ptr::null_mut(), struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, offset2field: IndexMap::new(), field_name: string2charc("".to_string())}
     }
 
     fn new_with_ptr(name: *mut c_char, pointed: *mut Type) -> Type {
-        Type { name, pointed, struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, offset2field: IndexMap::new()}
+        Type { name, pointed, struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, offset2field: IndexMap::new(), field_name: string2charc("".to_string())}
     }
 }
 

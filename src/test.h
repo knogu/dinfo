@@ -9,6 +9,7 @@ typedef struct Type {
     struct Type* struct_next_field;
     int64_t offset;
     void* offset2mem;
+    char* field_name;
 } Type;
 
 typedef struct {
