@@ -581,7 +581,6 @@ pub struct Type {
     struct_first_field: *mut Type, // null <-> not a struct
     struct_next_field: *mut Type, // not null <-> a field of a struct
     offset: i64, // for struct member
-    offset2field: IndexMap<usize, *mut Type>,
     field_name: *mut c_char, // for struct member
 }
 
@@ -657,14 +656,10 @@ fn loop_entries<R: Reader, W: Write>(
     dwarf: &gimli::Dwarf<R>,
 ) -> Result<HashMap<usize, Func>> {
     let mut func_addr2name: HashMap<usize, String> = HashMap::new();
-    let mut func_or_struct_name_2_args_or_members: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
     let mut name2struct_typ: IndexMap<String, Type> = IndexMap::new();
     let mut addr2func: HashMap<usize, Func> = HashMap::new();
     let mut cur_func_addr: usize = 0;
-    let mut cur_funcname = "".to_string();
-    let mut cur_struct_name = "".to_string();
     let mut cur_last_struct_field: Option<*mut Type> = None;
-    let mut cur_struct = Type::new("dummy".to_string());
 
     let mut entries = unit.entries_raw(None)?;
     while !entries.is_empty() {
@@ -708,10 +703,8 @@ fn loop_entries<R: Reader, W: Write>(
         if let Some(rev_val) = abbrev {
             match rev_val.tag() {
                 gimli::DW_TAG_subprogram => {
-                    func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
-                    cur_funcname = name.clone();
                     func_addr2name.insert(cur_func_addr, name.clone());
-                    let func = Func{name: cur_funcname.clone(), args: vec![], addr: cur_func_addr};
+                    let func = Func{name: name.clone(), args: vec![], addr: cur_func_addr};
                     addr2func.insert(cur_func_addr, func);
                 }
                 gimli::DW_TAG_formal_parameter => {
@@ -726,56 +719,29 @@ fn loop_entries<R: Reader, W: Write>(
                             bytes_cnt: bytesize,
                             typ
                         };
-                        func_or_struct_name_2_args_or_members.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
                         addr2func.get_mut(&cur_func_addr).unwrap().args.push(arg.clone());
                     }
                 }
                 gimli::DW_TAG_structure_type => {
-                    func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
-                    cur_struct_name = name.clone();
-                    // cur_struct = ;
                     name2struct_typ.insert(name.clone(), Type::new(name.clone()));
                 }
                 gimli::DW_TAG_member => {
-                    // let member = ArgOrMember{
-                    //     is_arg: false,
-                    //     name,
-                    //     typ,
-                    //     location: offset,
-                    //     bytes_cnt: bytesize,
-                    // };
-                    // func_or_struct_name_2_args_or_members.get_mut(&*cur_struct_name.clone()).unwrap().push(member.clone());
-                    // let typ_p = Box::into_raw(Box::new(typ));
                     let struct_name = name2struct_typ.keys().last().unwrap().clone();
                     unsafe {
                         typ.offset = offset;
-                        println!("field name put: {}", name);
                         typ.field_name = string2charc(name);
                         let typ_b = Box::new(typ);
                         let typ_p = Box::into_raw(typ_b);
-                        name2struct_typ.get_mut(&struct_name).unwrap().offset2field.insert(offset as usize, typ_p);
                         if name2struct_typ.get(&struct_name).unwrap().struct_first_field.is_null() {
                             name2struct_typ.get_mut(&struct_name).unwrap().struct_first_field = typ_p;
                             cur_last_struct_field = Some(typ_p);
                         } else {
-                            // println!("struct_name: {}", struct_name);
                             if let Some(cur) = cur_last_struct_field {
                                 (*cur).struct_next_field = typ_p;
                                 cur_last_struct_field = Some(typ_p);
                             }
-                            // (*cur_last_struct_field.unwrap()).struct_next_field = typ;
                         }
                     }
-
-
-                    // if let Some(cur) = name2struct_typ. {
-                    //     unsafe {
-                    //         (*cur).struct_next_field = typ_p;
-                    //     }
-                    // } else {
-                    //     cur_struct.struct_first_field = typ_p;
-                    //     cur_last_struct_field = Some(typ_p);
-                    // }
                 }
                 _ => {}
             }
@@ -890,11 +856,11 @@ use indexmap::IndexMap;
 
 impl Type {
     fn new(name: String) -> Type {
-        Type { name: string2charc(name), pointed: ptr::null_mut(), struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, offset2field: IndexMap::new(), field_name: string2charc("".to_string())}
+        Type { name: string2charc(name), pointed: ptr::null_mut(), struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, field_name: string2charc("".to_string())}
     }
 
     fn new_with_ptr(name: *mut c_char, pointed: *mut Type) -> Type {
-        Type { name, pointed, struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, offset2field: IndexMap::new(), field_name: string2charc("".to_string())}
+        Type { name, pointed, struct_next_field: null_mut(), struct_first_field: null_mut(), offset: 0, field_name: string2charc("".to_string())}
     }
 }
 
