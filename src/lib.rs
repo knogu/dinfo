@@ -589,11 +589,10 @@ pub struct Type {
 #[repr(C)]
 pub struct CType {
     name: *mut c_char,
-    pointed: *mut crate::Type,
-    struct_first_field: *mut crate::Type, // null <-> not a struct
-    struct_next_field: *mut crate::Type, // not null <-> a field of a struct
+    pointed: *mut CType,
+    struct_first_field: *mut CType, // null <-> not a struct
+    struct_next_field: *mut CType, // not null <-> a field of a struct
     offset: i64, // for struct member
-    offset2field: *mut IndexMap<usize, *mut Type>,
     field_name: *mut c_char, // for struct member
 }
 
@@ -613,23 +612,38 @@ pub fn convert_arg(arg: &ArgOrMember) -> CArg {
         is_arg: arg.is_arg,
         name,
         location: arg.location,
-        typ: convert_typ(&arg.clone().typ),
+        typ: convert_typ(arg.clone().typ),
         bytes_cnt: arg.bytes_cnt,
     }
 }
 
-pub fn convert_typ(typ: &Type) -> CType {
-    let m = Box::new(typ.clone().offset2field);
-    println!("cchar: {}", c_char_to_string(typ.field_name).unwrap());
-    CType {
+pub fn convert_typ(typ: Type) -> CType { unsafe{
+    let pointed = if typ.pointed.is_null() { null_mut() } else {
+        let t = unsafe{ (*typ.pointed).clone() };
+        let ctyp = convert_typ(t);
+        Box::into_raw(Box::new(ctyp))
+    };
+
+    let struct_first_field = if typ.struct_first_field.is_null() { null_mut() } else {
+        let t = (*typ.struct_first_field).clone();
+        let ctyp = convert_typ(t);
+        Box::into_raw(Box::new(ctyp))
+    };
+
+    let struct_next_field = if typ.struct_next_field.is_null() { null_mut() } else {
+        let t = (*typ.struct_next_field).clone();
+        let ctyp = convert_typ(t);
+        Box::into_raw(Box::new(ctyp))
+    };
+
+    return CType {
         name: typ.name,
-        pointed: typ.pointed,
-        struct_first_field: typ.struct_first_field,
-        struct_next_field: typ.struct_next_field,
+        pointed,
+        struct_first_field,
+        struct_next_field,
         offset: typ.offset,
-        offset2field: Box::into_raw(m),
-        field_name: typ.field_name,
-    }
+        field_name: typ.field_name
+    }}
 }
 
 fn c_char_to_string(c_string: *const c_char) -> Result<String> {
@@ -735,7 +749,7 @@ fn loop_entries<R: Reader, W: Write>(
                     let struct_name = name2struct_typ.keys().last().unwrap().clone();
                     unsafe {
                         typ.offset = offset;
-                        // println!("field name: {}", name);
+                        println!("field name put: {}", name);
                         typ.field_name = string2charc(name);
                         let typ_b = Box::new(typ);
                         let typ_p = Box::into_raw(typ_b);
