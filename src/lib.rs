@@ -311,8 +311,13 @@ fn print_usage(opts: &getopts::Options) -> ! {
 #[no_mangle]
 pub extern "C" fn get_addr2func(file_path: *const c_char) -> *mut HashMap<usize, Func> {
     let file_path = unsafe { CStr::from_ptr(file_path).to_str().unwrap().to_string() };
-    let map = get_func_info(&file_path).unwrap();
-    let m = Box::new(map);
+    println!("got path");
+    let map = get_func_info(&file_path);
+    println!("got map");
+    // println!("{:?}", map.err());
+
+    let m = Box::new(map.unwrap());
+
     Box::into_raw(m)
 }
 
@@ -561,6 +566,15 @@ pub struct ArgOrMember { // argument or struct's member
     pub bytes_cnt: u64,
 }
 
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct Type {
+    name: *mut c_char,
+    pointed: *mut Type,
+    struct_first_field: *mut Type, // null <-> not a struct
+    struct_next_field: *mut Type, // not null <-> a field of a struct
+}
+
 #[repr(C)]
 pub struct CArg {
     pub is_arg: bool,
@@ -576,9 +590,15 @@ pub fn convert_arg(arg: &ArgOrMember) -> CArg {
         is_arg: arg.is_arg,
         name,
         location: arg.location,
-        typ: arg.clone().typ,
+        typ: arg.typ,
         bytes_cnt: arg.bytes_cnt,
     }
+}
+
+fn c_char_to_string(c_string: *const c_char) -> Result<String> {
+    let c_str: &CStr = unsafe { CStr::from_ptr(c_string) };
+    let str_slice: &str = c_str.to_str().unwrap();
+    Ok(str_slice.to_owned())
 }
 
 fn loop_entries<R: Reader, W: Write>(
@@ -587,10 +607,13 @@ fn loop_entries<R: Reader, W: Write>(
 ) -> Result<HashMap<usize, Func>> {
     let mut func_addr2name: HashMap<usize, String> = HashMap::new();
     let mut func_or_struct_name_2_args_or_members: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
+    let mut name2struct_typ: IndexMap<String, *mut Type> = IndexMap::new();
     let mut addr2func: HashMap<usize, Func> = HashMap::new();
     let mut cur_func_addr: usize = 0;
     let mut cur_funcname = "".to_string();
     let mut cur_struct_name = "".to_string();
+    let mut cur_last_struct_field: Option<*mut Type> = None;
+    let mut cur_struct = Type::new("dummy".to_string());
 
     let mut entries = unit.entries_raw(None)?;
     while !entries.is_empty() {
@@ -641,28 +664,62 @@ fn loop_entries<R: Reader, W: Write>(
                     addr2func.insert(cur_func_addr, func);
                 }
                 gimli::DW_TAG_formal_parameter => {
-                    let arg = ArgOrMember {is_arg: true,
-                        name,
-                        location: offset,
-                        bytes_cnt: bytesize,
-                        typ
-                    };
-                    func_or_struct_name_2_args_or_members.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
-                    addr2func.get_mut(&cur_func_addr).unwrap().args.push(arg.clone());
+                    unsafe {
+                        let key = &c_char_to_string((*typ).name).unwrap();
+                        if name2struct_typ.contains_key(key) {
+                            typ = *name2struct_typ.get(key).unwrap();
+                        }
+                        let arg = ArgOrMember {is_arg: true,
+                            name,
+                            location: offset,
+                            bytes_cnt: bytesize,
+                            typ
+                        };
+                        func_or_struct_name_2_args_or_members.get_mut(&*cur_funcname.clone()).unwrap().push(arg.clone());
+                        addr2func.get_mut(&cur_func_addr).unwrap().args.push(arg.clone());
+                    }
                 }
                 gimli::DW_TAG_structure_type => {
                     func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
-                    cur_struct_name = name;
+                    cur_struct_name = name.clone();
+                    // cur_struct = ;
+                    name2struct_typ.insert(name.clone(), &mut Type::new(name.clone()));
                 }
                 gimli::DW_TAG_member => {
-                    let member = ArgOrMember{
-                        is_arg: false,
-                        name,
-                        typ,
-                        location: offset,
-                        bytes_cnt: bytesize,
-                    };
-                    func_or_struct_name_2_args_or_members.get_mut(&*cur_struct_name.clone()).unwrap().push(member.clone());
+                    // let member = ArgOrMember{
+                    //     is_arg: false,
+                    //     name,
+                    //     typ,
+                    //     location: offset,
+                    //     bytes_cnt: bytesize,
+                    // };
+                    // func_or_struct_name_2_args_or_members.get_mut(&*cur_struct_name.clone()).unwrap().push(member.clone());
+                    // let typ_p = Box::into_raw(Box::new(typ));
+                    let struct_name = name2struct_typ.keys().last().unwrap().clone();
+                    unsafe {
+                        println!("structname: {}", struct_name);
+                        println!("isNull: {:?}", (*(*name2struct_typ.get(&struct_name).unwrap())).struct_first_field.is_null());
+                        println!("last_field: {:?}", cur_last_struct_field);
+                        if (*(*name2struct_typ.get(&struct_name).unwrap())).struct_first_field.is_null() {
+                            (*(*name2struct_typ.get_mut(&struct_name).unwrap())).struct_first_field = typ;
+                            cur_last_struct_field = Some(typ);
+                        } else {
+                            if let Some(cur) = cur_last_struct_field {
+                                (*cur).struct_next_field = typ;
+                            }
+                            // (*cur_last_struct_field.unwrap()).struct_next_field = typ;
+                        }
+                    }
+
+
+                    // if let Some(cur) = name2struct_typ. {
+                    //     unsafe {
+                    //         (*cur).struct_next_field = typ_p;
+                    //     }
+                    // } else {
+                    //     cur_struct.struct_first_field = typ_p;
+                    //     cur_last_struct_field = Some(typ_p);
+                    // }
                 }
                 _ => {}
             }
@@ -771,17 +828,9 @@ fn get_arg_type<R: Reader, W: Write>(
     return Type::new("type err".to_string());
 }
 
-#[derive(Debug, Clone)]
-#[repr(C)]
-pub struct Type {
-    name: *mut c_char,
-    pointed: *mut Type,
-    struct_first_field: *mut Type, // null <-> not a struct
-    struct_next_field: *mut Type, // not null <-> a field of a struct
-}
-
 use std::ptr;
 use std::ptr::null_mut;
+use indexmap::IndexMap;
 
 impl Type {
     fn new(name: String) -> Type {

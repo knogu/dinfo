@@ -119,6 +119,7 @@ dependencies = [
  "fallible-iterator",
  "getopts",
  "gimli",
+ "indexmap",
  "memmap2",
  "num_cpus",
  "object",
