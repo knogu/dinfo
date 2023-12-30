@@ -308,15 +308,6 @@ fn print_usage(opts: &getopts::Options) -> ! {
 //     }
 // }
 
-// Cから呼ぶ
-#[no_mangle]
-pub extern "C" fn get_func2args(file_path: *const c_char) -> *mut HashMap<usize, Func> {
-    let file_path = unsafe { CStr::from_ptr(file_path).to_str().unwrap().to_string() };
-    let map = get_func_info(&file_path).unwrap();
-    let m = Box::new(map);
-    Box::into_raw(m)
-}
-
 #[no_mangle]
 pub extern "C" fn get_addr2func(file_path: *const c_char) -> *mut HashMap<usize, Func> {
     let file_path = unsafe { CStr::from_ptr(file_path).to_str().unwrap().to_string() };
@@ -337,16 +328,6 @@ pub extern "C" fn get_arg_cnt_from_func_addr(m: *mut HashMap<usize, Func>, addr:
     let m = unsafe { &*m };
     let func = m.get(&addr);
     func.unwrap().args.len()
-}
-
-#[no_mangle]
-pub extern "C" fn get_arg_count(m: *mut HashMap<String, Vec<ArgOrMember>>, funcname: *const c_char) -> usize {
-    let m = unsafe { &*m };
-    let funcname = unsafe { CStr::from_ptr(funcname).to_str().unwrap().to_string() };
-    match m.get(&funcname) {
-        Some(v) => v.len(),
-        None => 0,
-    }
 }
 
 #[no_mangle]
@@ -688,26 +669,6 @@ fn loop_entries<R: Reader, W: Write>(
         }
     }
     Ok(addr2func)
-}
-
-fn get_low_pc<R: Reader, W: Write> (
-    attr: &gimli::Attribute<R>,
-    unit: &gimli::Unit<R>,
-) -> i64 {
-    // match attr.name(({
-    //     gimli::DW_AT_high_pc => {
-    //         writeln!(w, "<offset-from-lowpc>{}", data)?;
-    //     }
-    // }
-    return match attr.value() {
-        gimli::AttributeValue::Exprloc(ref data) => {
-            get_frame_offset_by_data::<R, W>(unit.encoding(), data).unwrap()
-        }
-        gimli::AttributeValue::Udata(data) => {
-            data as i64
-        }
-        _ => { 0 }
-    }
 }
 
 fn get_arg_loc<R: Reader, W: Write> (
