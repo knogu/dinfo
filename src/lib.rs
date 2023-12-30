@@ -590,7 +590,7 @@ pub fn convert_arg(arg: &ArgOrMember) -> CArg {
         is_arg: arg.is_arg,
         name,
         location: arg.location,
-        typ: arg.typ,
+        typ: arg.clone().typ,
         bytes_cnt: arg.bytes_cnt,
     }
 }
@@ -607,7 +607,7 @@ fn loop_entries<R: Reader, W: Write>(
 ) -> Result<HashMap<usize, Func>> {
     let mut func_addr2name: HashMap<usize, String> = HashMap::new();
     let mut func_or_struct_name_2_args_or_members: HashMap<String, Vec<ArgOrMember>> = HashMap::new();
-    let mut name2struct_typ: IndexMap<String, *mut Type> = IndexMap::new();
+    let mut name2struct_typ: IndexMap<String, Type> = IndexMap::new();
     let mut addr2func: HashMap<usize, Func> = HashMap::new();
     let mut cur_func_addr: usize = 0;
     let mut cur_funcname = "".to_string();
@@ -622,7 +622,7 @@ fn loop_entries<R: Reader, W: Write>(
         let mut name = "".to_string();
         let mut offset = 0;
         let mut bytesize = 0;
-        let mut typ: Type = Type::new("".to_string());
+        let mut typ = Type::new("".to_string());
 
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
@@ -665,9 +665,9 @@ fn loop_entries<R: Reader, W: Write>(
                 }
                 gimli::DW_TAG_formal_parameter => {
                     unsafe {
-                        let key = &c_char_to_string((*typ).name).unwrap();
+                        let key = &c_char_to_string(typ.name).unwrap();
                         if name2struct_typ.contains_key(key) {
-                            typ = *name2struct_typ.get(key).unwrap();
+                            typ = name2struct_typ.get(key).unwrap().clone();
                         }
                         let arg = ArgOrMember {is_arg: true,
                             name,
@@ -683,7 +683,7 @@ fn loop_entries<R: Reader, W: Write>(
                     func_or_struct_name_2_args_or_members.insert(name.clone(), vec![]);
                     cur_struct_name = name.clone();
                     // cur_struct = ;
-                    name2struct_typ.insert(name.clone(), &mut Type::new(name.clone()));
+                    name2struct_typ.insert(name.clone(), Type::new(name.clone()));
                 }
                 gimli::DW_TAG_member => {
                     // let member = ArgOrMember{
@@ -697,15 +697,16 @@ fn loop_entries<R: Reader, W: Write>(
                     // let typ_p = Box::into_raw(Box::new(typ));
                     let struct_name = name2struct_typ.keys().last().unwrap().clone();
                     unsafe {
-                        println!("structname: {}", struct_name);
-                        println!("isNull: {:?}", (*(*name2struct_typ.get(&struct_name).unwrap())).struct_first_field.is_null());
-                        println!("last_field: {:?}", cur_last_struct_field);
-                        if (*(*name2struct_typ.get(&struct_name).unwrap())).struct_first_field.is_null() {
-                            (*(*name2struct_typ.get_mut(&struct_name).unwrap())).struct_first_field = typ;
-                            cur_last_struct_field = Some(typ);
+                        let typ_b = Box::new(typ);
+                        let typ_p = Box::into_raw(typ_b);
+                        if name2struct_typ.get(&struct_name).unwrap().struct_first_field.is_null() {
+                            name2struct_typ.get_mut(&struct_name).unwrap().struct_first_field = typ_p;
+                            cur_last_struct_field = Some(typ_p);
                         } else {
+                            // println!("struct_name: {}", struct_name);
                             if let Some(cur) = cur_last_struct_field {
-                                (*cur).struct_next_field = typ;
+                                (*cur).struct_next_field = typ_p;
+                                cur_last_struct_field = Some(typ_p);
                             }
                             // (*cur_last_struct_field.unwrap()).struct_next_field = typ;
                         }
