@@ -30,5 +30,10 @@ int main() {
 
     dump_func(map, ptr);
 
+    map = get_addr2func("/Users/jp31281/call-tracer/dinfo/samples/enum");
+    ptr = 0x00001149;
+
+    dump_func(map, ptr);
+
     return 0;
 }

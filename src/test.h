@@ -5,6 +5,8 @@
 typedef struct Type {
     char* name;
     struct Type* pointed;
+    struct Type* struct_first_field;
+    struct Type* struct_next_field;
 } Type;
 
 typedef struct {

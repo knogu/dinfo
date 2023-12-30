@@ -599,7 +599,7 @@ fn loop_entries<R: Reader, W: Write>(
         let mut name = "".to_string();
         let mut offset = 0;
         let mut bytesize = 0;
-        let mut typ: Type = Type { name: string2charc("dummy".to_string()), pointed: null_mut() };
+        let mut typ: Type = Type::new("".to_string());
 
         for spec in abbrev.map(|x| x.attributes()).unwrap_or(&[]) {
             let attr = entries.read_attribute(*spec)?;
@@ -768,7 +768,7 @@ fn get_arg_type<R: Reader, W: Write>(
             return get_type_name_from_die::<R, W>(die, unit, dwarf).unwrap();
         }
     }
-    return Type::new(string2charc("type err".to_string()));
+    return Type::new("type err".to_string());
 }
 
 #[derive(Debug, Clone)]
@@ -776,18 +776,20 @@ fn get_arg_type<R: Reader, W: Write>(
 pub struct Type {
     name: *mut c_char,
     pointed: *mut Type,
+    struct_first_field: *mut Type, // null <-> not a struct
+    struct_next_field: *mut Type, // not null <-> a field of a struct
 }
 
 use std::ptr;
 use std::ptr::null_mut;
 
 impl Type {
-    fn new(value: *mut c_char) -> Type {
-        Type { name: value, pointed: ptr::null_mut() }
+    fn new(name: String) -> Type {
+        Type { name: string2charc(name), pointed: ptr::null_mut(), struct_next_field: null_mut(), struct_first_field: null_mut()}
     }
 
     fn new_with_ptr(name: *mut c_char, pointed: *mut Type) -> Type {
-        Type { name, pointed }
+        Type { name, pointed, struct_next_field: null_mut(), struct_first_field: null_mut()}
     }
 }
 
@@ -801,7 +803,7 @@ fn get_type_name_from_die<R: Reader, W: Write>(
             let type_name = die.attr(gimli::DW_AT_name)?;
             if let Some(typename) = type_name {
                 let name = get_type_name::<R, W>(&typename, dwarf);
-                return Ok(Type::new(string2charc(name)));
+                return Ok(Type::new(name));
             }
             return Err(Error::IoError);
         }
@@ -809,7 +811,7 @@ fn get_type_name_from_die<R: Reader, W: Write>(
             let base = die.attr(gimli::DW_AT_type);
             let base = &base.unwrap();
             if base.is_none() { // If void *, this becomes true
-                return Ok(Type::new(string2charc("".to_string())));
+                return Ok(Type::new("".to_string()));
             }
             let name = "Ptr".to_string();
             let pointed = Box::new(get_arg_type::<R, W>(&base.clone().unwrap(), unit, dwarf));
@@ -821,11 +823,11 @@ fn get_type_name_from_die<R: Reader, W: Write>(
             let type_name = die.attr(gimli::DW_AT_name)?;
             if let Some(typename) = type_name {
                 let name = get_type_name::<R, W>(&typename, dwarf);
-                return Ok(Type::new(string2charc(name)));
+                return Ok(Type::new(name));
             }
-            return Ok(Type::new(string2charc("".to_string())));
+            return Ok(Type::new("".to_string()));
         }
-        _ => { return Ok(Type::new(string2charc("type not caught".to_string()))); }
+        _ => { return Ok(Type::new("type not caught".to_string())); }
     }
 }
 
